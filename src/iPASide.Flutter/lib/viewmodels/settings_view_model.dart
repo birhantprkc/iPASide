@@ -1,0 +1,424 @@
+import '../engine/engine.dart';
+import '../platform/background_refresh_scheduler.dart';
+import '../services/file_picker.dart';
+import '../services/settings_store.dart';
+import '../ui/shell/app_dialogs.dart';
+import '../ui/shell/nav_destination.dart';
+import 'base_view_model.dart';
+import 'navigation_state.dart';
+
+/// Settings: the engine-, OS- and disk-facing sections.
+///
+/// Auto-refresh drives the OS scheduler (the section is hidden entirely when the
+/// platform has none), Signed IPAs owns the persisted keep/folder choice and the
+/// files it produces, Account reflects the cached Apple ID session, Anisette
+/// reports the provisioning package, and About carries the engine version.
+/// Each section loads independently so one failure never blanks the screen.
+///
+/// Appearance is deliberately absent: the theme button is a pure view concern
+/// bound straight to `ThemeController`, exactly as it was in the previous
+/// build's code-behind.
+class SettingsViewModel extends BaseViewModel {
+  /// Creates the view model and starts every section's load.
+  SettingsViewModel({
+    required this._engine,
+    required this._navigation,
+    required this._scheduler,
+    required this._settings,
+    required this._picker,
+    required this._dialogs,
+  }) {
+    // Synchronous, so the toggle and folder are already right on the first
+    // frame; only the figures they describe have to be fetched.
+    _signedIpa = _settings.loadSignedIpa();
+
+    _loadAutoRefresh();
+    _loadAccount();
+    _loadAnisette();
+    _loadVersion();
+    _loadSignedUsage();
+  }
+
+  final EngineApi _engine;
+  final NavigationState _navigation;
+  final BackgroundRefreshScheduler _scheduler;
+  final SettingsStore _settings;
+  final FilePickerService _picker;
+  final DialogService _dialogs;
+
+  // ---- Auto-refresh card ----
+
+  bool _autoRefreshEnabled = false;
+  bool _autoRefreshBusy = false;
+  String _autoRefreshMessage = '';
+  bool _isAutoRefreshMessageError = false;
+
+  /// False hides the whole Auto-refresh card: this OS has no scheduler.
+  bool get autoRefreshSupported => _scheduler.isSupported;
+
+  /// Whether the daily background schedule currently exists.
+  bool get autoRefreshEnabled => _autoRefreshEnabled;
+
+  /// True while a create/delete round-trip runs; the toggle is disabled.
+  bool get autoRefreshBusy => _autoRefreshBusy;
+
+  /// Confirmation or failure text for the last toggle; empty when there is
+  /// none.
+  String get autoRefreshMessage => _autoRefreshMessage;
+
+  bool get hasAutoRefreshMessage => _autoRefreshMessage.isNotEmpty;
+
+  bool get isAutoRefreshMessageError => _isAutoRefreshMessageError;
+
+  /// Creates or removes the schedule, then re-reads what the OS actually has.
+  ///
+  /// The toggle moves immediately and snaps back if the scheduler refuses.
+  Future<void> setAutoRefreshEnabled(bool enabled) async {
+    if (_autoRefreshBusy || enabled == _autoRefreshEnabled) return;
+
+    _autoRefreshEnabled = enabled;
+    _autoRefreshBusy = true;
+    notify();
+
+    try {
+      await _scheduler.setEnabled(enabled);
+      final actual = await _scheduler.isEnabled();
+      _autoRefreshEnabled = actual;
+      _isAutoRefreshMessageError = false;
+      _autoRefreshMessage = actual ? 'On \u2014 runs daily at noon.' : 'Off.';
+    } catch (error) {
+      _autoRefreshEnabled = !enabled;
+      _isAutoRefreshMessageError = true;
+      _autoRefreshMessage = _schedulerErrorText(error);
+    } finally {
+      _autoRefreshBusy = false;
+      notify();
+    }
+  }
+
+  // ---- Signed IPAs section ----
+
+  SignedIpaSettings _signedIpa = const SignedIpaSettings();
+  String? _engineSignedDirectory;
+  bool _isSignedLoading = true;
+  bool _isSignedUnreadable = false;
+  int _signedCount = 0;
+  int _signedBytes = 0;
+  bool _signedBusy = false;
+  String _signedMessage = '';
+  bool _isSignedMessageError = false;
+
+  /// Whether the signed `.ipa` is kept after a successful install.
+  bool get keepSignedIpa => _signedIpa.keep;
+
+  /// Whether the folder is the engine's own, so there is nothing to reset.
+  bool get usesDefaultSignedDirectory => _signedIpa.usesDefaultDirectory;
+
+  /// The folder signed IPAs go to.
+  ///
+  /// The user's choice when there is one; otherwise the engine's default, which
+  /// only the engine can name — so until it answers there is a placeholder here
+  /// rather than a guess.
+  String get signedDirectoryText =>
+      _signedIpa.directory ?? _engineSignedDirectory ?? _pending;
+
+  /// True until the first listing settles, one way or the other.
+  bool get isSignedLoading => _isSignedLoading;
+
+  /// One line describing what is on disk right now.
+  ///
+  /// A folder that does not exist yet and one that exists empty are the same
+  /// thing to the user, and both are ordinary: the engine reports either as
+  /// empty, and nothing has been kept. Only a failure to ask at all — which may
+  /// be the folder or may be the engine — leaves the question unanswered, and
+  /// then the reason goes underneath rather than into this line.
+  String get signedUsageText {
+    if (_isSignedLoading) return 'Checking\u2026';
+    if (_isSignedUnreadable) return "Couldn't check.";
+    if (_signedCount == 0) return 'Nothing kept yet.';
+    return '${describeFileCount(_signedCount)} \u00b7 '
+        '${describeBytes(_signedBytes)}';
+  }
+
+  /// True while a delete runs; the button shows a spinner and blocks re-entry.
+  bool get signedBusy => _signedBusy;
+
+  /// Whether there is anything to delete, and nothing already in flight.
+  bool get canDeleteSignedIpas =>
+      !_signedBusy && !_isSignedLoading && _signedCount > 0;
+
+  /// The outcome of the last delete, or why the folder could not be read; empty
+  /// when there is neither.
+  String get signedMessage => _signedMessage;
+
+  bool get hasSignedMessage => _signedMessage.isNotEmpty;
+
+  bool get isSignedMessageError => _isSignedMessageError;
+
+  /// Persists whether the signed `.ipa` survives an install.
+  ///
+  /// Nothing on disk changes here: the flag only decides what the next sideload
+  /// leaves behind.
+  void setKeepSignedIpa(bool keep) {
+    if (keep == _signedIpa.keep) return;
+
+    _signedIpa = _signedIpa.withKeep(keep);
+    _settings.saveSignedIpa(_signedIpa);
+    notify();
+  }
+
+  /// Asks the shell for a folder and, if the user picks one, persists it and
+  /// re-reads what is in it.
+  Future<void> chooseSignedDirectory() async {
+    final String? chosen = await _picker.pickSignedFolder();
+    if (chosen == null || chosen.trim().isEmpty) return; // cancelled
+
+    await _applySignedDirectory(chosen.trim());
+  }
+
+  /// Hands the folder back to the engine's default.
+  Future<void> resetSignedDirectory() async {
+    if (_signedIpa.usesDefaultDirectory) return;
+
+    await _applySignedDirectory(null);
+  }
+
+  /// Deletes every signed `.ipa` in the folder, once the user has agreed to it.
+  ///
+  /// Destructive and not undoable, so the count and the space are put in front
+  /// of the user first; declining leaves the disk exactly as it was.
+  Future<void> deleteSignedIpas() async {
+    if (!canDeleteSignedIpas) return;
+
+    final bool confirmed = await _dialogs.confirm(
+      title: 'Delete kept signed IPAs?',
+      message:
+          'This permanently deletes ${describeFileCount(_signedCount)} from '
+          '$signedDirectoryText and frees ${describeBytes(_signedBytes)}.\n\n'
+          'The apps already installed on your iPhone are not touched. iPASide '
+          'will simply sign an app again the next time you install it.',
+      confirmLabel: 'Delete',
+      danger: true,
+    );
+    if (!confirmed) return;
+
+    _signedBusy = true;
+    _setSignedMessage('');
+    notify();
+
+    try {
+      final SignedIpaCleanup cleanup = await _engine.cleanSigned(
+        directory: _signedIpa.directory,
+      );
+      _setSignedMessage(
+        cleanup.removed == 0
+            ? 'There was nothing left to delete.'
+            : 'Deleted ${describeFileCount(cleanup.removed)}, freed '
+                  '${describeBytes(cleanup.bytesFreed)}.',
+      );
+    } on EngineShutdownException {
+      _signedBusy = false;
+      return; // the app is closing
+    } catch (error) {
+      _setSignedMessage(BaseViewModel.errorText(error), isError: true);
+    }
+
+    _signedBusy = false;
+    notify();
+
+    // Whether it worked or not, what is on disk now is the only honest figure.
+    await _loadSignedUsage();
+  }
+
+  /// Renders a byte count the way a file manager would.
+  ///
+  /// Rounded to whole units below a gigabyte — a signed IPA is tens or hundreds
+  /// of megabytes and nobody is counting its kilobytes — and to one decimal
+  /// above, where whole gigabytes would hide most of the difference.
+  static String describeBytes(int bytes) {
+    const int kb = 1 << 10;
+    const int mb = 1 << 20;
+    const int gb = 1 << 30;
+
+    if (bytes < kb) return '$bytes B';
+    if (bytes < mb) return '${(bytes / kb).round()} KB';
+    if (bytes < gb) return '${(bytes / mb).round()} MB';
+    return '${(bytes / gb).toStringAsFixed(1)} GB';
+  }
+
+  /// `1 file` / `3 files`, spelled out rather than left as a bare number.
+  static String describeFileCount(int count) =>
+      count == 1 ? '1 file' : '$count files';
+
+  // ---- Account card ----
+
+  bool _isAccountLoading = true;
+  String? _accountError;
+  bool _isAuthenticated = false;
+  String _accountEmail = '';
+
+  bool get isAccountLoading => _isAccountLoading;
+  String? get accountError => _accountError;
+  bool get hasAccountError => _accountError != null;
+  bool get isAuthenticated => _isAuthenticated;
+  String get accountEmail => _accountEmail;
+  bool get isAccountSignedOut =>
+      !_isAccountLoading && _accountError == null && !_isAuthenticated;
+
+  /// Drops the cached session, then remounts Settings so every card reloads.
+  Future<void> signOut() async {
+    try {
+      await _engine.logout();
+    } on EngineShutdownException {
+      return; // the app is closing
+    } catch (error) {
+      _accountError = BaseViewModel.errorText(error);
+      notify();
+      return;
+    }
+    _navigation.navigateTo(NavKey.settings);
+  }
+
+  void signIn() => _navigation.navigateTo(NavKey.signIn);
+
+  // ---- Anisette card ----
+
+  bool _isAnisetteLoading = true;
+  String? _anisetteError;
+  String _anisetteProvider = '';
+  String _anisetteState = '';
+
+  bool get isAnisetteLoading => _isAnisetteLoading;
+  String? get anisetteError => _anisetteError;
+  bool get hasAnisetteError => _anisetteError != null;
+
+  /// The anisette package in use, e.g. `anisette 1.2.4`.
+  String get anisetteProvider => _anisetteProvider;
+
+  /// `provisioned` once state is cached on disk, otherwise `first-use`.
+  String get anisetteState => _anisetteState;
+
+  // ---- About card ----
+
+  String _engineVersionText = _pending;
+
+  /// The engine's version, or the placeholder until it answers.
+  String get engineVersionText => _engineVersionText;
+
+  // ---- Loads ----
+
+  /// Stands in for a value only the engine can supply, until it has.
+  static const String _pending = '\u2026';
+
+  Future<void> _loadAutoRefresh() async {
+    if (!_scheduler.isSupported) return;
+    try {
+      _autoRefreshEnabled = await _scheduler.isEnabled();
+      notify();
+    } catch (_) {
+      // The toggle simply stays off when the schedule cannot be read.
+    }
+  }
+
+  Future<void> _loadAccount() async {
+    try {
+      final status = await _engine.loginStatus();
+      if (status.authenticated) {
+        _accountEmail = status.email ?? '';
+        _isAuthenticated = true;
+      }
+    } catch (error) {
+      if (!BaseViewModel.isShutdown(error)) {
+        _accountError = BaseViewModel.errorText(error);
+      }
+    } finally {
+      _isAccountLoading = false;
+      notify();
+    }
+  }
+
+  Future<void> _loadAnisette() async {
+    try {
+      final status = await _engine.anisette();
+      _anisetteProvider = 'anisette ${status.packageVersion ?? '?'}';
+      _anisetteState = status.stateCached ? 'provisioned' : 'first-use';
+    } catch (error) {
+      if (!BaseViewModel.isShutdown(error)) {
+        _anisetteError = BaseViewModel.errorText(error);
+      }
+    } finally {
+      _isAnisetteLoading = false;
+      notify();
+    }
+  }
+
+  Future<void> _loadVersion() async {
+    try {
+      final version = await _engine.version();
+      final text = version.version;
+      _engineVersionText = text == null || text.isEmpty ? '?' : text;
+      notify();
+    } catch (_) {
+      // About keeps its placeholder; the version is not worth an error state.
+    }
+  }
+
+  /// Re-reads the folder: where it is, how many files and how big.
+  ///
+  /// A folder that does not exist yet is not a failure — the engine reports an
+  /// empty one — and neither is an empty one. A folder that genuinely cannot be
+  /// read leaves the figures at zero, says so on the row, and puts the engine's
+  /// own cleaned reason underneath; nothing raw ever reaches the screen.
+  ///
+  /// A success deliberately leaves [signedMessage] alone, so the confirmation of
+  /// a delete survives the re-read that follows it.
+  Future<void> _loadSignedUsage() async {
+    try {
+      final SignedIpaListing listing = await _engine.signed(
+        directory: _signedIpa.directory,
+      );
+      _engineSignedDirectory = listing.directory;
+      _signedCount = listing.count;
+      _signedBytes = listing.bytes;
+      _isSignedUnreadable = false;
+    } catch (error) {
+      if (!BaseViewModel.isShutdown(error)) {
+        _signedCount = 0;
+        _signedBytes = 0;
+        _isSignedUnreadable = true;
+        _setSignedMessage(BaseViewModel.errorText(error), isError: true);
+      }
+    } finally {
+      _isSignedLoading = false;
+      notify();
+    }
+  }
+
+  /// Persists a new folder — or the default, for null — and re-reads it.
+  Future<void> _applySignedDirectory(String? directory) async {
+    _signedIpa = _signedIpa.withDirectory(directory);
+    _settings.saveSignedIpa(_signedIpa);
+
+    // The old folder's figures describe a folder nobody is looking at now.
+    _isSignedLoading = true;
+    _isSignedUnreadable = false;
+    _setSignedMessage('');
+    notify();
+
+    await _loadSignedUsage();
+  }
+
+  /// Sets the section's one message channel, so the text and the tone can never
+  /// drift apart.
+  void _setSignedMessage(String message, {bool isError = false}) {
+    _signedMessage = message;
+    _isSignedMessageError = isError;
+  }
+
+  /// [BackgroundRefreshException.message] is already presentable, so it is
+  /// cleaned directly rather than through the exception's `toString`.
+  static String _schedulerErrorText(Object error) =>
+      error is BackgroundRefreshException
+      ? EngineException.cleanError(error.message)
+      : BaseViewModel.errorText(error);
+}
