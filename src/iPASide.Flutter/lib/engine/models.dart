@@ -952,6 +952,8 @@ class LiveContainerStatus {
     this.certificatePending = false,
     this.certificateFilePresent = false,
     this.launched = false,
+    this.hasSidestore = false,
+    this.pairingPresent = false,
   });
 
   /// Parses a `livecontainer` payload.
@@ -964,6 +966,8 @@ class LiveContainerStatus {
         certificatePending: jsonBool(json, 'certificate_pending'),
         certificateFilePresent: jsonBool(json, 'certificate_file_present'),
         launched: jsonBool(json, 'launched'),
+        hasSidestore: jsonBool(json, 'has_sidestore'),
+        pairingPresent: jsonBool(json, 'pairing_present'),
       );
 
   /// Whether LiveContainer is on the device at all.
@@ -988,6 +992,15 @@ class LiveContainerStatus {
   /// Whether LiveContainer has ever been opened; it builds its folders then.
   final bool launched;
 
+  /// Whether this build carries SideStore, so the phone can refresh apps itself.
+  ///
+  /// Read from the IPA the refresh registry recorded, because the frameworks that would
+  /// prove it live in the app bundle, which `house_arrest` does not vend.
+  final bool hasSidestore;
+
+  /// Whether the pairing file on-device refresh needs has reached the device.
+  final bool pairingPresent;
+
   /// Installed, opened, and no import still waiting.
   bool get isReady => installed && launched && !certificatePending;
 
@@ -1001,11 +1014,14 @@ class LiveContainerStatus {
           other.version == version &&
           other.certificatePending == certificatePending &&
           other.certificateFilePresent == certificateFilePresent &&
-          other.launched == launched;
+          other.launched == launched &&
+          other.hasSidestore == hasSidestore &&
+          other.pairingPresent == pairingPresent;
 
   @override
   int get hashCode => Object.hash(installed, bundleId, name, version,
-      certificatePending, certificateFilePresent, launched);
+      certificatePending, certificateFilePresent, launched, hasSidestore,
+      pairingPresent);
 
   @override
   String toString() => 'LiveContainerStatus(installed: $installed, '

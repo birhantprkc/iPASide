@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../engine/engine.dart';
 import '../../viewmodels/live_container_view_model.dart';
 import '../theme/app_theme.dart';
 import '../widgets/buttons.dart';
@@ -49,8 +50,16 @@ class _LiveContainerViewState extends State<LiveContainerView> {
                 const SizedBox(height: Space.s5),
                 Entrance(index: 2, child: _RunCard(vm: vm)),
               ],
+              if (vm.isInstalled) ...<Widget>[
+                const SizedBox(height: Space.s5),
+                Entrance(index: 3, child: _GuestApps(vm: vm)),
+              ],
+              if (vm.hasSideStore) ...<Widget>[
+                const SizedBox(height: Space.s5),
+                Entrance(index: 4, child: _SideStoreCard(vm: vm)),
+              ],
               const SizedBox(height: Space.s5),
-              const Entrance(index: 3, child: _ExplainerCard()),
+              const Entrance(index: 5, child: _ExplainerCard()),
             ],
           ),
         ),
@@ -233,6 +242,141 @@ class _RunCard extends StatelessWidget {
     final String? version = vm.result?.version;
     return version == null || version.isEmpty ? '' : ' $version';
   }
+}
+
+/// The apps running inside LiveContainer - the point of the whole screen.
+class _GuestApps extends StatelessWidget {
+  const _GuestApps({required this.vm});
+
+  final LiveContainerViewModel vm;
+
+  @override
+  Widget build(BuildContext context) {
+    final List<GuestApp> guests = vm.guests;
+
+    return AppCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              const Expanded(child: SectionLabel('APPS INSIDE LIVECONTAINER')),
+              AppButton(
+                label: 'Add an app',
+                icon: Icons.add_rounded,
+                tone: ButtonTone.primary,
+                compact: true,
+                busy: vm.isAdding,
+                onPressed: vm.isGuestBusy ? null : vm.addGuest,
+              ),
+            ],
+          ),
+          const SizedBox(height: Space.s2),
+          Text(
+            guests.isEmpty
+                ? 'Nothing yet. An app added here is not installed on your phone, so it '
+                    'uses none of your three slots.'
+                : '${guests.length} app${guests.length == 1 ? '' : 's'}, using none of '
+                    'your three app slots.',
+            style: context.t.bodyMuted,
+          ),
+          if (vm.guestProgress != null) ...<Widget>[
+            const SizedBox(height: Space.s4),
+            LoadingLine(label: vm.guestProgress!),
+          ],
+          if (vm.guestNotice != null) ...<Widget>[
+            const SizedBox(height: Space.s4),
+            Alert(
+              kind: AlertKind.info,
+              message: vm.guestNotice!,
+              trailing: AppButton(
+                label: 'Dismiss',
+                compact: true,
+                onPressed: vm.dismissGuestNotice,
+              ),
+            ),
+          ],
+          for (final GuestApp guest in guests) ...<Widget>[
+            const SizedBox(height: Space.s3),
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: Text(
+                    guest.bundleId ?? '',
+                    style: context.t.semi(FontSizes.body),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(width: Space.s4),
+                AppButton(
+                  label: 'Remove',
+                  tone: ButtonTone.danger,
+                  compact: true,
+                  busy: vm.isRemoving(guest.bundleId),
+                  onPressed: vm.isGuestBusy ? null : () => vm.removeGuest(guest),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// The SideStore build's own state: whether the phone can refresh without a PC.
+class _SideStoreCard extends StatelessWidget {
+  const _SideStoreCard({required this.vm});
+
+  final LiveContainerViewModel vm;
+
+  @override
+  Widget build(BuildContext context) => AppCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                const Expanded(child: SectionLabel('ON-DEVICE REFRESH')),
+                Pill(
+                  label: vm.isPaired ? 'Paired' : 'Not paired',
+                  kind: vm.isPaired ? PillKind.ok : PillKind.warn,
+                ),
+              ],
+            ),
+            const SizedBox(height: Space.s2),
+            Text(
+              vm.isPaired
+                  ? 'This build carries SideStore, and it has this PC\u2019s pairing '
+                      'file, so it can re-sign apps on the phone itself.'
+                  : 'This build carries SideStore but has no pairing file yet, so it '
+                      'cannot re-sign anything. Reinstall to deliver one.',
+              style: context.t.bodyMuted,
+            ),
+            const SizedBox(height: Space.s4),
+            // Two things SideStore needs that iPASide cannot provide, said plainly rather
+            // than left for the user to hit as errors.
+            const _Point(
+              icon: Icons.vpn_lock_outlined,
+              title: 'It needs a local tunnel',
+              body: 'SideStore reaches your phone over the network, so a local device '
+                  'VPN such as StosVPN or LocalDevVPN has to be connected before a '
+                  'refresh will start.',
+            ),
+            const SizedBox(height: Space.s4),
+            const _Point(
+              icon: Icons.shortcut_outlined,
+              title: 'And a Shortcut named TurnOffData',
+              body: 'When SideStore finishes it runs an iOS Shortcut with exactly that '
+                  'name, to drop the tunnel. Without one, the Shortcuts app opens with '
+                  'an error \u2014 the refresh still worked. Create a Shortcut called '
+                  'TurnOffData containing a disconnect-VPN action to silence it. '
+                  'Shortcuts cannot be created from a PC.',
+            ),
+          ],
+        ),
+      );
 }
 
 /// Why this exists, in the terms someone hitting the three-app wall would ask it.

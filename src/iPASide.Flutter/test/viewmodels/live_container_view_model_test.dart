@@ -1,8 +1,11 @@
 import 'dart:collection';
 
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ipaside/engine/engine.dart';
+import 'package:ipaside/services/file_picker.dart';
 import 'package:ipaside/services/settings_store.dart';
+import 'package:ipaside/ui/shell/app_dialogs.dart';
 import 'package:ipaside/ui/shell/nav_destination.dart';
 import 'package:ipaside/viewmodels/device_selection.dart';
 import 'package:ipaside/viewmodels/live_container_view_model.dart';
@@ -39,6 +42,22 @@ class _FakeRunner implements EngineCommandRunner {
       for (final String line in progress[command] ?? const <String>[]) {
         onProgress(line);
       }
+    }
+
+    // `livecontainer --apps` returns a list where the bare command returns an object, so
+    // it needs its own script - keyed `livecontainer--apps`. Unscripted it is empty,
+    // which is what a test only interested in the status wants and saves every one of
+    // them from spelling it out.
+    if (args.contains('--apps')) {
+      final Queue<Object>? guests = _scripted['livecontainer--apps'];
+      final Object outcome = guests != null && guests.isNotEmpty
+          ? guests.removeFirst()
+          : _defaults['livecontainer--apps'] ??
+              const EngineResult(ok: true, data: <dynamic>[]);
+      if (outcome is EngineResult) {
+        return outcome;
+      }
+      throw outcome;
     }
 
     final Queue<Object>? queued = _scripted[command];
@@ -145,17 +164,65 @@ Map<String, dynamic> _setup({
       },
     };
 
+/// Answers the IPA prompt with whatever a test scripted, without a real dialog.
+class _FakePicker implements FilePickerService {
+  _FakePicker({this.ipa});
+
+  /// What [pickIpa] returns; null means the user cancelled.
+  String? ipa;
+
+  int pickCount = 0;
+
+  @override
+  Future<String?> pickIpa() async {
+    pickCount++;
+    return ipa;
+  }
+
+  @override
+  Future<List<String>> pickTweaks() async => const <String>[];
+
+  @override
+  Future<String?> pickSignedFolder() async => null;
+}
+
+/// Records what the view model asked, and answers without a navigator.
+class _FakeDialogs extends DialogService {
+  _FakeDialogs() : super(GlobalKey<NavigatorState>());
+
+  /// What [confirm] returns.
+  bool answer = true;
+
+  final List<String> confirms = <String>[];
+
+  @override
+  Future<bool> confirm({
+    required String title,
+    required String message,
+    String confirmLabel = 'OK',
+    String cancelLabel = 'Cancel',
+    bool danger = false,
+  }) async {
+    confirms.add(title);
+    return answer;
+  }
+}
+
 LiveContainerViewModel _model(
   _FakeRunner runner, {
   DeviceSelection? devices,
   NavigationState? navigation,
   _FakeSettings? settings,
+  _FakePicker? picker,
+  _FakeDialogs? dialogs,
 }) {
   final LiveContainerViewModel vm = LiveContainerViewModel(
     engine: EngineApi(runner),
     navigation: navigation ?? NavigationState(),
     settings: settings ?? _FakeSettings(),
     devices: devices ?? _noDevice(),
+    picker: picker ?? _FakePicker(),
+    dialogs: dialogs ?? _FakeDialogs(),
   );
   addTearDown(vm.dispose);
   return vm;
@@ -175,7 +242,7 @@ void main() {
       final LiveContainerViewModel vm = _model(runner);
       await vm.load();
 
-      expect(runner.calls.single, <String>['livecontainer']);
+      expect(runner.calls.first, <String>['livecontainer']);
       expect(vm.isInstalled, isTrue);
       expect(vm.status?.version, '3.8.0');
       expect(vm.needsLaunch, isFalse);
@@ -214,7 +281,7 @@ void main() {
           _model(runner, devices: await _device('AAAA1111'));
       await vm.load();
 
-      expect(runner.calls.single, <String>['livecontainer', '--udid', 'AAAA1111']);
+      expect(runner.calls.first, <String>['livecontainer', '--udid', 'AAAA1111']);
     });
 
     test('an engine failure is shown cleaned, not thrown', () async {
@@ -235,7 +302,8 @@ void main() {
       final LiveContainerViewModel vm = _model(runner);
       await Future.wait<void>(<Future<void>>[vm.load(), vm.load()]);
 
-      expect(runner.calls.length, 1);
+      // One load is a status read plus a guest-app read; a second would double both.
+      expect(runner.calls.length, 2);
     });
   });
 
@@ -344,11 +412,8 @@ void main() {
       final LiveContainerViewModel vm = _model(runner);
       await vm.setUp();
 
-      expect(vm.needsLaunch, isTrue);
-      expect(
-        runner.calls.where((List<String> c) => c.first == 'livecontainer').length,
-        2,
-      );
+      expect(vm.needsLaunch, isTrue,
+          reason: 'read back from the device rather than inferred from the run');
     });
   });
 
@@ -485,6 +550,174 @@ void main() {
       // stepper somewhere misleading on the way.
       expect(vm.progress.activeIndex, 4);
       expect(vm.progress.percent, 100);
+    });
+  });
+
+  group('LiveContainerViewModel guest apps', () {
+    test('the apps inside it are read alongside the status', () async {
+      final _FakeRunner runner = _FakeRunner()
+        ..always('livecontainer', _ok(_status()))
+        ..always(
+          'livecontainer--apps',
+          _ok(<dynamic>[
+            <String, dynamic>{'bundle_id': 'com.example.one', 'folder': 'com.example.one.app'},
+            <String, dynamic>{'bundle_id': 'com.example.two', 'folder': 'com.example.two.app'},
+          ]),
+        );
+
+      final LiveContainerViewModel vm = _model(runner);
+      await vm.load();
+
+      expect(vm.guests.map((GuestApp g) => g.bundleId), <String>[
+        'com.example.one',
+        'com.example.two',
+      ]);
+      expect(runner.calls.last, contains('--apps'));
+    });
+
+    test('nothing is asked about when LiveContainer is not installed', () async {
+      // The engine would refuse anyway, and an error about a missing LiveContainer is
+      // not news on a screen that has just said it is not installed.
+      final _FakeRunner runner = _FakeRunner()
+        ..always('livecontainer', _ok(<String, dynamic>{'installed': false}));
+
+      final LiveContainerViewModel vm = _model(runner);
+      await vm.load();
+
+      expect(vm.guests, isEmpty);
+      expect(runner.calls.single, isNot(contains('--apps')));
+    });
+
+    test('adding an app asks the engine to put it inside LiveContainer', () async {
+      // The status read that `load` and `addGuest` both do returns the same object; the
+      // add itself is the call under test, and its payload is read as a GuestAppInstall.
+      final _FakeRunner runner = _FakeRunner()
+        ..always(
+          'livecontainer',
+          _ok(<String, dynamic>{
+            ..._status(),
+            'status': 'installed',
+            'name': 'Example',
+          }),
+        );
+      final _FakePicker picker = _FakePicker(ipa: r'C:\ipas\Example.ipa');
+
+      final LiveContainerViewModel vm = _model(runner, picker: picker);
+      await vm.load();
+      await vm.addGuest();
+
+      final List<String> argv =
+          runner.calls.firstWhere((List<String> c) => c.contains('--add'));
+      expect(argv[argv.indexOf('--add') + 1], r'C:\ipas\Example.ipa');
+      expect(vm.guestNotice, contains('Example'));
+      expect(vm.isAdding, isFalse);
+    });
+
+    test('cancelling the file prompt does nothing at all', () async {
+      final _FakeRunner runner = _FakeRunner()
+        ..always('livecontainer', _ok(_status()));
+      final _FakePicker picker = _FakePicker();
+
+      final LiveContainerViewModel vm = _model(runner, picker: picker);
+      await vm.load();
+      final int before = runner.calls.length;
+      await vm.addGuest();
+
+      expect(picker.pickCount, 1);
+      expect(runner.calls.length, before);
+      expect(vm.guestNotice, isNull);
+    });
+
+    test('copy progress is surfaced as it arrives', () async {
+      final _FakeRunner runner = _FakeRunner()
+        ..always('livecontainer', _ok(_status()));
+      runner.progress['livecontainer'] = <String>[
+        '{"event":"progress","phase":"upload","percent":40,'
+            '"step":"Copying into LiveContainer \u00b7 340 / 844 files"}',
+      ];
+      final _FakePicker picker = _FakePicker(ipa: r'C:\ipas\Example.ipa');
+
+      final LiveContainerViewModel vm = _model(runner, picker: picker);
+      // Adding needs an installed LiveContainer, so the status has to be read first.
+      await vm.load();
+      final List<String?> seen = <String?>[];
+      vm.addListener(() => seen.add(vm.guestProgress));
+      await vm.addGuest();
+
+      expect(seen, contains('Copying into LiveContainer \u00b7 340 / 844 files'));
+      expect(vm.guestProgress, isNull, reason: 'cleared when the copy is over');
+    });
+
+    test('removing an app asks first, then removes it', () async {
+      final _FakeRunner runner = _FakeRunner()
+        ..always('livecontainer', _ok(_status()));
+      final _FakeDialogs dialogs = _FakeDialogs();
+
+      final LiveContainerViewModel vm = _model(runner, dialogs: dialogs);
+      await vm.removeGuest(const GuestApp(bundleId: 'com.example.app'));
+
+      expect(dialogs.confirms, <String>['Remove from LiveContainer?']);
+      final List<String> argv =
+          runner.calls.firstWhere((List<String> c) => c.contains('--remove'));
+      expect(argv[argv.indexOf('--remove') + 1], 'com.example.app');
+    });
+
+    test('declining the prompt leaves the app alone', () async {
+      final _FakeRunner runner = _FakeRunner()
+        ..always('livecontainer', _ok(_status()));
+      final _FakeDialogs dialogs = _FakeDialogs()..answer = false;
+
+      final LiveContainerViewModel vm = _model(runner, dialogs: dialogs);
+      await vm.removeGuest(const GuestApp(bundleId: 'com.example.app'));
+
+      expect(
+        runner.calls.any((List<String> c) => c.contains('--remove')),
+        isFalse,
+      );
+    });
+
+    test('an app with no bundle id cannot be removed', () async {
+      final _FakeRunner runner = _FakeRunner()
+        ..always('livecontainer', _ok(_status()));
+      final _FakeDialogs dialogs = _FakeDialogs();
+
+      final LiveContainerViewModel vm = _model(runner, dialogs: dialogs);
+      await vm.removeGuest(const GuestApp());
+
+      expect(dialogs.confirms, isEmpty, reason: 'nothing to confirm about');
+    });
+  });
+
+  group('LiveContainerViewModel SideStore build', () {
+    test('a build carrying SideStore is reported with its pairing state', () async {
+      final _FakeRunner runner = _FakeRunner()
+        ..next(
+          'livecontainer',
+          _ok(<String, dynamic>{
+            ..._status(),
+            'has_sidestore': true,
+            'pairing_present': true,
+          }),
+        )
+        ..always('livecontainer--apps', _ok(<dynamic>[]));
+
+      final LiveContainerViewModel vm = _model(runner);
+      await vm.load();
+
+      expect(vm.hasSideStore, isTrue);
+      expect(vm.isPaired, isTrue);
+    });
+
+    test('a plain build reports neither', () async {
+      final _FakeRunner runner = _FakeRunner()
+        ..next('livecontainer', _ok(_status()))
+        ..always('livecontainer--apps', _ok(<dynamic>[]));
+
+      final LiveContainerViewModel vm = _model(runner);
+      await vm.load();
+
+      expect(vm.hasSideStore, isFalse);
+      expect(vm.isPaired, isFalse);
     });
   });
 

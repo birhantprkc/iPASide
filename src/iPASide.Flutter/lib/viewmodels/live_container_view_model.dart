@@ -1,5 +1,7 @@
 import '../engine/engine.dart';
+import '../services/file_picker.dart';
 import '../services/settings_store.dart';
+import '../ui/shell/app_dialogs.dart';
 import '../ui/shell/nav_destination.dart';
 import 'base_view_model.dart';
 import 'device_selection.dart';
@@ -23,10 +25,14 @@ class LiveContainerViewModel extends BaseViewModel {
     required this._navigation,
     required this._settings,
     required this._devices,
+    required this._picker,
+    required this._dialogs,
   });
 
   final EngineApi _engine;
   final NavigationState _navigation;
+  final FilePickerService _picker;
+  final DialogService _dialogs;
 
   /// Read per run, never cached: this model is app-scoped and outlives any visit
   /// to Settings, so a value read in the constructor would go stale the moment the
@@ -47,6 +53,12 @@ class LiveContainerViewModel extends BaseViewModel {
   SideloadProgressState _progress = const SideloadProgressState();
   LiveContainerSetupResult? _result;
   String? _failureMessage;
+
+  List<GuestApp> _guests = const <GuestApp>[];
+  bool _isAdding = false;
+  String? _removingBundleId;
+  String? _guestProgress;
+  String? _guestNotice;
 
   /// What the device says, or null before the first look.
   LiveContainerStatus? get status => _status;
@@ -97,6 +109,37 @@ class LiveContainerViewModel extends BaseViewModel {
     return certificate.instructions;
   }
 
+  /// The apps running inside LiveContainer. None of them uses an app slot.
+  List<GuestApp> get guests => _guests;
+
+  /// Whether an app is being copied in.
+  bool get isAdding => _isAdding;
+
+  /// Whether that app is being removed.
+  bool isRemoving(String? bundleId) =>
+      bundleId != null && _removingBundleId == bundleId;
+
+  /// Live text while an app is being copied in, e.g. `340 / 844 files · 30 / 105 MB`.
+  String? get guestProgress => _guestProgress;
+
+  /// The outcome of the last add or remove.
+  String? get guestNotice => _guestNotice;
+
+  /// Whether anything is in flight, so the list should be frozen.
+  bool get isGuestBusy => _isAdding || _removingBundleId != null;
+
+  /// Whether this build carries SideStore, and so can refresh on the phone itself.
+  bool get hasSideStore => _status?.hasSidestore ?? false;
+
+  /// Whether the pairing file that on-device refresh needs is on the device.
+  bool get isPaired => _status?.pairingPresent ?? false;
+
+  void dismissGuestNotice() {
+    if (_guestNotice == null) return;
+    _guestNotice = null;
+    notify();
+  }
+
   /// Reads the device's LiveContainer state.
   Future<void> load() async {
     if (_isLoading) return;
@@ -105,10 +148,18 @@ class LiveContainerViewModel extends BaseViewModel {
     notify();
 
     try {
+      final String? udid = await _devices.targetUdid();
+      final String? connection = _devices.connectionArg;
       _status = await _engine.liveContainerStatus(
-        udid: await _devices.targetUdid(),
-        connection: _devices.connectionArg,
+        udid: udid,
+        connection: connection,
       );
+      // Only worth asking about the apps inside it once we know it is there; the engine
+      // would refuse anyway, and an error about a missing LiveContainer is not news on a
+      // screen that has just said it is not installed.
+      _guests = (_status?.installed ?? false)
+          ? await _engine.liveContainerGuests(udid: udid, connection: connection)
+          : const <GuestApp>[];
     } catch (error) {
       if (!BaseViewModel.isShutdown(error)) {
         _error = BaseViewModel.errorText(error);
@@ -117,6 +168,84 @@ class LiveContainerViewModel extends BaseViewModel {
       _isLoading = false;
       notify();
     }
+  }
+
+  /// Picks an IPA and puts it inside LiveContainer rather than on the phone.
+  ///
+  /// No provisioning, no signing and no app slot: LiveContainer signs it on device with
+  /// the certificate it already holds. That is the whole reason to run an app this way.
+  Future<void> addGuest() async {
+    if (isGuestBusy || !isInstalled) return;
+
+    final String? path = await _picker.pickIpa();
+    if (path == null) return;
+
+    _isAdding = true;
+    _guestNotice = null;
+    _guestProgress = 'Reading the app\u2026';
+    notify();
+
+    try {
+      final GuestAppInstall result = await _engine.installGuestApp(
+        path,
+        udid: await _devices.targetUdid(),
+        connection: _devices.connectionArg,
+        onProgress: (SideloadProgress progress) {
+          final String? step = progress.step;
+          if (step == null || step.isEmpty) return;
+          _guestProgress = step;
+          notify();
+        },
+      );
+      _guestNotice = 'Added ${result.name ?? result.bundleId}. Open LiveContainer and '
+          'it will sign it on first launch.';
+    } catch (error) {
+      if (!BaseViewModel.isShutdown(error)) {
+        _guestNotice = BaseViewModel.errorText(error);
+      }
+    } finally {
+      _isAdding = false;
+      _guestProgress = null;
+      notify();
+    }
+    await load();
+  }
+
+  /// Removes an app from inside LiveContainer, after asking.
+  Future<void> removeGuest(GuestApp guest) async {
+    final String? bundleId = guest.bundleId;
+    if (bundleId == null || isGuestBusy) return;
+
+    final bool confirmed = await _dialogs.confirm(
+      title: 'Remove from LiveContainer?',
+      message: '$bundleId will be deleted from inside LiveContainer, along with '
+          'anything it stored. Nothing on your phone itself is touched.',
+      confirmLabel: 'Remove',
+      cancelLabel: 'Keep it',
+      danger: true,
+    );
+    if (!confirmed) return;
+
+    _removingBundleId = bundleId;
+    _guestNotice = null;
+    notify();
+
+    try {
+      await _engine.removeGuestApp(
+        bundleId,
+        udid: await _devices.targetUdid(),
+        connection: _devices.connectionArg,
+      );
+      _guestNotice = 'Removed $bundleId.';
+    } catch (error) {
+      if (!BaseViewModel.isShutdown(error)) {
+        _guestNotice = BaseViewModel.errorText(error);
+      }
+    } finally {
+      _removingBundleId = null;
+      notify();
+    }
+    await load();
   }
 
   /// Downloads, signs, installs LiveContainer and hands it the certificate.
