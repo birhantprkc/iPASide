@@ -30,10 +30,6 @@
 /* Written by iPASide over house_arrest; deleted by us once the import is verified. */
 static NSString *const kRequestFileName = @"iPASide-cert-import.plist";
 
-/* The bare PKCS#12, kept alongside the request so that a failed automatic import can
- * still be completed by hand through LiveContainer's Settings -> Import Certificate. */
-static NSString *const kCertificateFileName = @"iPASide-certificate.p12";
-
 /* Request keys, matching what ipaside_engine.livecontainer writes. */
 static NSString *const kRequestAppGroupID = @"AppGroupID";
 static NSString *const kRequestCertificateData = @"CertificateData";
@@ -99,21 +95,19 @@ static NSDictionary *iPASideReadRequest(NSString *requestPath) {
     return request;
 }
 
-/** Remove the request and the loose PKCS#12 now that the certificate is stored. */
-static void iPASideRemoveRequestFiles(NSString *documents, NSString *requestPath) {
+/**
+ * Consume the request now that the certificate is stored.
+ *
+ * Only the request goes. The loose `iPASide-certificate.p12` iPASide writes beside it is
+ * deliberately left in place: it is what LiveContainer's own
+ * Settings -> Import Certificate reads, so leaving it means the manual route is always
+ * available if the stored certificate is ever removed, replaced or rejected - without
+ * needing a PC to put the file back. iPASide rewrites it on every install and refresh.
+ */
+static void iPASideConsumeRequest(NSString *requestPath) {
     NSError *error = nil;
     if (![NSFileManager.defaultManager removeItemAtPath:requestPath error:&error]) {
         iPASideLog(@"could not remove the request: %@", error.localizedDescription);
-    }
-
-    /* The PKCS#12 is the signing identity itself, and LiveContainer's Documents is
-     * exposed by the Files app, so it should not outlive a successful import. */
-    NSString *certificatePath = [documents stringByAppendingPathComponent:kCertificateFileName];
-    if ([NSFileManager.defaultManager fileExistsAtPath:certificatePath]) {
-        error = nil;
-        if (![NSFileManager.defaultManager removeItemAtPath:certificatePath error:&error]) {
-            iPASideLog(@"could not remove the certificate copy: %@", error.localizedDescription);
-        }
     }
 }
 
@@ -146,7 +140,7 @@ static void iPASideSeedCertificate(void) {
     id existing = [group objectForKey:kLCCertificateData];
     if ([existing isKindOfClass:NSData.class] && [existing isEqualToData:certificateData]) {
         iPASideLog(@"certificate already present in %@; removing the request", groupID);
-        iPASideRemoveRequestFiles(documents, requestPath);
+        iPASideConsumeRequest(requestPath);
         return;
     }
 
@@ -176,5 +170,5 @@ static void iPASideSeedCertificate(void) {
 
     iPASideLog(@"imported %lu bytes into %@",
                (unsigned long)certificateData.length, groupID);
-    iPASideRemoveRequestFiles(documents, requestPath);
+    iPASideConsumeRequest(requestPath);
 }
