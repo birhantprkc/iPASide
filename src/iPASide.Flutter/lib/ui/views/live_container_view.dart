@@ -102,21 +102,26 @@ class _StatusCard extends StatelessWidget {
       );
     }
 
+    final bool checking = vm.isLoading && vm.status == null;
     return StatusCard(
       label: 'STATUS',
       footer: _Action(vm: vm),
-      child: vm.isLoading && vm.status == null
-          ? const LoadingLine(label: 'Checking your iPhone\u2026')
-          : Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                // Shown whether or not it is installed - it is the same app either way,
-                // and seeing it is most useful before you have it.
-                const AppIconImage.asset('assets/brand/livecontainer.png'),
-                const SizedBox(width: Space.s4),
-                Expanded(child: _StatusBody(vm: vm)),
-              ],
-            ),
+      // The icon is a bundled asset with no dependency on the device, so it is drawn
+      // from the first frame - during the initial check, and whether or not
+      // LiveContainer is installed. It is the same app either way, and seeing it is most
+      // useful before you have it. Only the text beside it waits on the phone.
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          const AppIconImage.asset('assets/brand/livecontainer.png'),
+          const SizedBox(width: Space.s4),
+          Expanded(
+            child: checking
+                ? const LoadingLine(label: 'Checking your iPhone\u2026')
+                : _StatusBody(vm: vm),
+          ),
+        ],
+      ),
     );
   }
 }
