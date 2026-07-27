@@ -68,10 +68,16 @@ one or all of them.
 
 ![Library](docs/screenshots/library.png)
 
-**LiveContainer** — install it in one press and it will run your apps inside itself,
-so the three-app limit stops being the thing you plan around.
+**LiveContainer** — install it in one press, then add apps to it from here. They run
+inside it rather than on your phone, so the three-app limit stops being the thing you
+plan around.
 
 ![LiveContainer](docs/screenshots/livecontainer.png)
+
+**Account** — every certificate on your Apple ID and which tool registered it, so you
+can tidy up without breaking something you did not know was there.
+
+![Account](docs/screenshots/account.png)
 
 **Settings** — pick your connection, decide whether to keep signed `.ipa` files and
 where they go, and turn on background refresh.
@@ -97,8 +103,16 @@ There is a full light theme too, and the sun in the title bar switches to it.
 - **Get past the three-app limit, with LiveContainer.** One press installs
   [LiveContainer](https://github.com/LiveContainer/LiveContainer), signs it with the
   entitlements it needs, and hands it your signing certificate so it can sign apps on
-  the phone itself. Apps you then run inside it are not installed separately, so they
-  do not use up a slot. Verified end to end on an iPhone 8 Plus with a free Apple ID.
+  the phone itself. Then **put apps inside it straight from iPASide** — they are never
+  installed on the phone, so they use none of your three slots, and they have no 7-day
+  expiry of their own. Verified end to end on an iPhone 8 Plus with a free Apple ID.
+- **Refresh on the phone, no PC.** iPASide installs the LiveContainer build that carries
+  SideStore and hands it this computer's pairing file, so the phone can re-sign its own
+  apps. It needs a local device VPN connected, and an iOS Shortcut named `TurnOffData`
+  that iPASide cannot create for you — the app says so rather than letting you find out.
+- **See and manage your Apple ID's account.** Certificates, App IDs and devices, for any
+  Apple ID you have signed in. Each certificate says which tool registered it, because
+  Apple counts them per machine and revoking the wrong one breaks a different tool's apps.
 - **Keep your apps working.** The Library counts down each app's 7 days, and a
   daily background task re-signs whatever is due — no need to leave iPASide open.
 - **Use more than one Apple ID.** Keep several signed in and switch without typing
@@ -221,10 +235,10 @@ The engine works on its own, without the app. Every command takes `--json`:
 | `login` | Apple ID sign-in (`--email`, `--code`, `--status`, `--accounts`, `--use`, `--logout`) |
 | `inspect <ipa>` | Read an IPA's identity and icon without extracting it |
 | `sideload <ipa>` | Provision, sign and install, with all the advanced options |
-| `livecontainer` | Report on LiveContainer, or set it up (`--setup`, `--download`, `--ipa`) |
+| `livecontainer` | LiveContainer: `--setup`, `--variant`, and `--apps` / `--add` / `--remove` for the apps inside it |
 | `installs` / `refresh` / `forget` | Manage the registry and renew signatures |
 | `signed` | Report or clean up kept `.ipa` files (`--clean`) |
-| `slots` / `delete-app-id` | See and free App ID, device and certificate usage |
+| `slots` / `revoke-cert` / `delete-app-id` | An Apple ID's certificates, App IDs and devices; `--email` picks which account |
 | `apps` / `uninstall` | Apps installed on the device |
 
 Device commands take `--udid` to pick a phone and `--connection usb|wifi|auto` to
@@ -247,12 +261,12 @@ profile.
 
 ## Quality
 
-**970 automated tests**, run on every push along with a full installer build:
+**1,062 automated tests**, run on every push along with a full installer build:
 
 | Suite | Tests | Files | What it covers |
 |---|---|---|---|
-| Engine (pytest) | 276 | 16 | Apple ID auth, provisioning, app groups, signing, `.deb` tweak extraction, install progress, device selection, multi-account, LiveContainer entitlements, expiry, error phrasing |
-| App (Flutter) | 694 | 37 | Every view model, the engine transport, update planning, settings, the platform layer, motion, scroll |
+| Engine (pytest) | 340 | 20 | Apple ID auth, provisioning, app groups, signing, `.deb` tweak extraction, install progress, device selection, multi-account, LiveContainer entitlements, pairing files, certificate scoping, Windows path limits, expiry, error phrasing |
+| App (Flutter) | 722 | 38 | Every view model, the engine transport, update planning, settings, the platform layer, motion, scroll |
 
 CI runs three jobs per push - `Engine tests`, `App analyze + tests`, `Build installer` -
 and lints are errors, not warnings. The badge above links to the runs.

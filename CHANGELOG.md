@@ -42,9 +42,49 @@ All notable changes to iPASide are documented here. This project adheres to
   team-scoped bundle id a free account requires. Its app extensions are kept rather than
   stripped, unlike an ordinary sideload, because `LiveProcess.appex` is its multitasking.
 
-- **`livecontainer` engine command** - report status, `--download` a release, or `--setup`
-  the whole thing. Takes `--udid` / `--connection` and the signed-output options like any
-  other device command.
+- **Apps run inside LiveContainer, installed from iPASide.** An app placed in
+  LiveContainer is not installed on the phone, so it uses none of the three slots and has
+  no seven-day expiry of its own - proved on hardware, where one guest app is running on a
+  provisioning profile that expired nine months ago and another has no profile at all.
+  iOS never installs them, so it never checks. They stop working only when LiveContainer
+  does, and iPASide already keeps that refreshed.
+
+  Installing one needs nothing clever: LiveContainer's own importer moves the unzipped
+  bundle into place and then patches and signs it, and the patch is triggered by the
+  absence of its revision marker. So iPASide writes the bundle over `house_arrest` and
+  LiveContainer does the rest - none of its private format is reproduced, and iPASide
+  signs nothing. Measured at 7.9 MB/s, so a 300 MB app lands in under a minute.
+
+- **On-device refresh, with the SideStore build.** Each LiveContainer release carries a
+  second IPA with SideStore inside the same bundle id, so a store that can re-sign apps on
+  the phone costs no extra app slot. iPASide installs that build by default and hands it
+  this computer's pairing record.
+
+  The pairing file needed one fix to be usable: usbmux on Windows writes every key a
+  lockdown session needs *except* `UDID`, because the file name carries it. Handed to
+  SideStore on its own, with no name to read, an otherwise complete record is rejected as
+  "invalid or missing". Adding the key is the whole difference - confirmed by SideStore's
+  own log, which then reported the file loaded and minimuxer bound to 127.0.0.1.
+
+  Two things it needs that iPASide cannot provide are stated in the app rather than left
+  to be discovered: a local device VPN must be connected before a refresh starts, and
+  SideStore runs an iOS Shortcut named exactly `TurnOffData` when it finishes. Without
+  that Shortcut the Shortcuts app opens with an error even though the refresh worked, and
+  Shortcuts cannot be created from a PC.
+
+- **An Account tab.** Certificates, App IDs and devices for any signed-in Apple ID, with
+  each certificate labelled by the tool that registered it, and revoke / delete for
+  tidying up. This exists because a free team routinely holds several certificates -
+  verified holding three at once, iPASide's alongside Xcode's on a Mac and SideStore's on
+  a phone - and nothing showed which was which.
+
+- **`livecontainer` engine command** - report status, `--download` a release, `--setup`
+  the whole thing, or manage what runs inside it with `--apps`, `--add` and `--remove`.
+  `--variant` picks the build. Takes `--udid` / `--connection` and the signed-output
+  options like any other device command.
+
+- **`revoke-cert` engine command**, and `--email` on `slots` and `delete-app-id`, so
+  account housekeeping can name which Apple ID it means.
 
 ### Changed
 
@@ -60,15 +100,44 @@ All notable changes to iPASide are documented here. This project adheres to
 
 ### Fixed
 
+- **iPASide no longer revokes other tools' signing certificates.** When it needed to issue
+  a new one it revoked *every* development certificate on the team. Apple scopes that limit
+  per machine rather than per account, so a team routinely holds several - which means the
+  old behaviour would destroy a user's Xcode certificate, or SideStore's, on a fresh
+  install, a lost cache, or an expired certificate. Every app those had signed then stops
+  launching, in tools iPASide has no part in. It now revokes only a certificate registered
+  under its own machine name. The failed-revocation path no longer swallows the error into
+  an `except: pass` either; it is used to explain a request that then fails.
+- **Apps with deeply nested frameworks can be signed on Windows.** zsign writes a temporary
+  file beside every Mach-O it re-signs, through APIs capped at `MAX_PATH`. A bundle whose
+  frameworks nest inside frameworks - a Swift package product names itself twice, once as
+  the folder and once as the binary - is ~180 characters deep before the working directory
+  is counted, and over the limit zsign dies on an `fopen` with both streams empty and a -1
+  exit. Nothing downstream could explain it. The working directory is now sized against the
+  IPA up front, and moved somewhere shorter when it will not fit; where nothing fits, it
+  says so and names the fix. Found on LiveContainer's SideStore build, but it applies to any
+  app with nested Swift package frameworks.
+- **`slots` no longer reports the App ID limit as spare capacity.** It printed registered
+  identifiers as `N/10`, but the ten is a ceiling on *new* registrations over a rolling
+  seven days while the list is what exists - so `2/10` read as eight to spare when the
+  week's allowance could already be spent, which is exactly how a refresh gets refused
+  after the tool said there was room. Now two separate numbers, with the difference stated,
+  and `delete-app-id` says every time that it frees the name rather than the allowance.
 - **A refresh now re-delivers LiveContainer's certificate.** Re-signing without doing so is
   harmless while the certificate stays the same and silently wrong when it does not: if
   Apple revokes it or the local cache goes missing, provisioning issues a new one and
   LiveContainer is left holding a copy that no longer matches. Nothing reported that - it
-  installed, launched, and only failed when it tried to sign.
+  installed, launched, and only failed when it tried to sign. The same step now delivers
+  the pairing file, for the same reason: a refresh reinstalls the app and takes its
+  container with it.
 - **Two sideloads started in the same frame install once.** Both the sideload and
   LiveContainer flows claimed their "running" flag only after the sign-in probe, so two
   calls could clear the guard before either set it. The button being disabled was doing all
   the work.
+- **Copy progress for an app bundle actually moves.** Putting an app into LiveContainer
+  emitted a frame per file - 844 of them for one app - and because a bundle's size sits in
+  one or two files the percentage jumped from 0 to 100 with nothing in between. Now 29
+  frames for the same app, with file counts alongside megabytes.
 
 ## [1.0.1] - 2026-07-27
 
