@@ -29,6 +29,14 @@ _BUNDLE_CACHE = "bundle.json"
 _IDENTITY_P12 = "identity.p12"
 _PROFILE = "profile.mobileprovision"
 
+#: The machine name iPASide registers its certificates under.
+#:
+#: Load-bearing rather than cosmetic: Apple's per-machine certificate limit is what lets
+#: one account hold a certificate for Xcode, another for SideStore, and this one at the
+#: same time, so it is also how a re-issue tells ours apart from theirs. Changing it
+#: orphans the certificate already issued under the old name.
+CERTIFICATE_MACHINE_NAME = "iPASide"
+
 
 def _account_slug(email: str | None) -> str | None:
     """The per-account signing folder name, or None before anyone has signed in."""
@@ -106,8 +114,10 @@ def _ensure_certificate(team_id: str, account_slug: str | None) -> tuple[bytes, 
 
     The key cache is per account. Shared, a second Apple ID would find the first
     one's key, fail to match it against its own team's certificates, and respond by
-    revoking that team's only certificate — breaking every app the other account
-    had signed.
+    revoking a certificate — breaking every app that had signed.
+
+    Re-issuing only ever revokes a certificate iPASide itself registered; see
+    :data:`CERTIFICATE_MACHINE_NAME`.
     """
     cache_path = paths.signing_dir(account_slug) / _CERT_CACHE
     server_certs = developer.list_certificates(team_id)
@@ -121,19 +131,36 @@ def _ensure_certificate(team_id: str, account_slug: str | None) -> tuple[bytes, 
                 serial,
             )
 
-    # We need to issue a new certificate. A free account permits only a single
-    # development certificate, and a cert whose private key we don't hold is
-    # useless to us, so revoke any existing ones to free the slot.
+    # We need to issue a new certificate, and the account has limited room for them, so
+    # an old one has to go. Only ever one of *ours*: Apple scopes the limit per machine
+    # rather than per account, so the same team routinely holds a certificate for Xcode
+    # on a Mac and another for SideStore on the phone, and both coexist with this one -
+    # verified on a free account holding all three at once. Revoking those would stop
+    # every app they signed from launching, in tools iPASide has nothing to do with.
+    revoke_failure: Exception | None = None
     for cert in server_certs:
         serial = cert.get("serialNumber")
-        if serial:
+        if serial and cert.get("machineName") == CERTIFICATE_MACHINE_NAME:
             try:
                 developer.revoke_certificate(team_id, serial)
-            except developer.DeveloperServicesError:
-                pass
+            except developer.DeveloperServicesError as exc:
+                # Not fatal on its own - the certificate may already be gone, and the
+                # request below is the real test of whether there was room. Remembered
+                # rather than swallowed, so it can explain a failure that follows.
+                revoke_failure = exc
 
     key_pem, csr_pem = signing.generate_key_and_csr()
-    developer.submit_csr(team_id, csr_pem)
+    try:
+        developer.submit_csr(team_id, csr_pem, machine_name=CERTIFICATE_MACHINE_NAME)
+    except developer.DeveloperServicesError as exc:
+        if revoke_failure is not None:
+            raise gsa.GsaError(
+                f"Apple would not issue a signing certificate ({exc}), and the old "
+                f"iPASide certificate could not be revoked to make room for it "
+                f"({revoke_failure}). Revoking it in the Apple Developer portal, under "
+                "Certificates, will let this succeed."
+            ) from exc
+        raise
     # Match the freshly-issued certificate to our key by public key (robust: the
     # CSR response's serial does not always line up with the listed serial).
     cert_der, serial = _find_cert_for_key(developer.list_certificates(team_id), key_pem)
