@@ -4,6 +4,72 @@ All notable changes to iPASide are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+
+- **LiveContainer support, which is a way around the three-app limit.** A free Apple ID
+  allows three sideloaded apps on a device at once. LiveContainer runs other apps inside
+  itself, so the phone counts one however many are loaded into it. One press in the new
+  LiveContainer tab downloads the current release, signs it with what it needs, installs
+  it, and hands it the signing certificate. Verified end to end on an iPhone 8 Plus with a
+  free Apple ID: JIT-less self-test passing, and an app installed inside it and launched.
+
+  Three things had to be established first, none of them obvious:
+
+  - **Free accounts can use app groups.** LiveContainer reaches its certificate through a
+    shared container, and the received wisdom is that this needs a paid account. It does
+    not: enable the `APG3427HIY` capability on the App ID, assign the group, *then*
+    download the profile, and the profile grants it. Order matters and nothing fails
+    loudly if you get it wrong - the profile simply comes back without the group.
+  - **The entitlements have to be spelled out.** A profile grants `TEAMID.*` for keychain
+    access, but LiveContainer looks for 128 explicit
+    `TEAMID.com.kdt.livecontainer.shared.N` groups, and other signers write the wildcard
+    instead - which is why its maintainers require AltStore or SideStore. The wildcard
+    legally covers the explicit entries, so signing with the expanded list is accepted.
+    This is what zsign's `-e` is for, and iPASide was not using it.
+  - **The certificate cannot be delivered from a PC.** LiveContainer reads it from the app
+    group's `UserDefaults`, and that container is unreachable over `house_arrest`: AFC
+    lists directories through `..` but refuses to open or stat anything outside the app's
+    own container. So iPASide leaves an import request in LiveContainer's `Documents` -
+    which *is* writable - and injects a small dylib that performs the import on first
+    launch, using the same calls LiveContainer's own Settings would. The dylib is built on
+    a macOS CI runner, because an iOS arm64 Mach-O cannot be produced on Windows.
+
+  LiveContainer's own code is not modified. All eleven Mach-O binaries in the bundle,
+  including the 1.5 MB framework its logic lives in, are byte-identical to the release
+  build; what changes is the code signature, one added `LC_LOAD_DYLIB`, and the
+  team-scoped bundle id a free account requires. Its app extensions are kept rather than
+  stripped, unlike an ordinary sideload, because `LiveProcess.appex` is its multitasking.
+
+- **`livecontainer` engine command** - report status, `--download` a release, or `--setup`
+  the whole thing. Takes `--udid` / `--connection` and the signed-output options like any
+  other device command.
+
+### Changed
+
+- **Signing profiles.** A sideload can now name a profile that contributes app groups, an
+  explicit entitlements plist, and a dylib to inject. Only the profile's *name* is
+  recorded, so a re-sign months later regenerates whatever the app requires then and finds
+  the dylib wherever that build keeps it - rather than replaying values, and an install
+  path, that were true once.
+- **The progress stepper takes a schedule.** Phase names, labels and which phases can
+  honestly report a percentage now live in one place, so a flow with different phases is a
+  constant rather than a second copy of the state machine. A LiveContainer setup draws five
+  steps; a sideload still draws three.
+
+### Fixed
+
+- **A refresh now re-delivers LiveContainer's certificate.** Re-signing without doing so is
+  harmless while the certificate stays the same and silently wrong when it does not: if
+  Apple revokes it or the local cache goes missing, provisioning issues a new one and
+  LiveContainer is left holding a copy that no longer matches. Nothing reported that - it
+  installed, launched, and only failed when it tried to sign.
+- **Two sideloads started in the same frame install once.** Both the sideload and
+  LiveContainer flows claimed their "running" flag only after the sign-in probe, so two
+  calls could clear the guard before either set it. The button being disabled was doing all
+  the work.
+
 ## [1.0.1] - 2026-07-27
 
 Fixes made after 1.0.0 was published, released under a new version so an installed copy

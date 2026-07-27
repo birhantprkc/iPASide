@@ -341,6 +341,39 @@ void main() {
       expect(runner.callsTo('sideload'), isEmpty);
     });
 
+    test('two sideloads in one frame install once', () async {
+      // The button is disabled while a run is on, but the guard has to hold on its
+      // own: both calls would otherwise clear the sign-in probe before either set
+      // the running flag, and the app would be installed twice.
+      final _FakeRunner runner = _FakeRunner()
+        ..always('login', _authenticated)
+        ..always('sideload', _installed);
+      final SideloadViewModel vm = await _withIpa(runner);
+
+      await Future.wait<void>(<Future<void>>[vm.sideload(), vm.sideload()]);
+
+      expect(runner.callsTo('sideload').length, 1);
+      expect(vm.isSucceeded, isTrue);
+      expect(vm.isRunning, isFalse);
+    });
+
+    test('a signed-out session leaves no half-started run on screen', () async {
+      // The running flag is claimed before the probe, so bailing out to sign-in
+      // has to put it back or the stepper would sit there forever.
+      final _FakeRunner runner = _FakeRunner();
+      final NavigationState navigation = NavigationState();
+      addTearDown(navigation.dispose);
+      final SideloadViewModel vm =
+          await _withIpa(runner, navigation: navigation);
+      runner.always('login', _ok(<String, dynamic>{'authenticated': false}));
+
+      await vm.sideload();
+
+      expect(vm.isRunning, isFalse);
+      expect(vm.isFailed, isFalse);
+      expect(vm.isSucceeded, isFalse);
+    });
+
     test('no IPA selected runs nothing', () async {
       final _FakeRunner runner = _FakeRunner()
         ..always('login', _authenticated);

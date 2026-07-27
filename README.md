@@ -68,6 +68,11 @@ one or all of them.
 
 ![Library](docs/screenshots/library.png)
 
+**LiveContainer** — install it in one press and it will run your apps inside itself,
+so the three-app limit stops being the thing you plan around.
+
+![LiveContainer](docs/screenshots/livecontainer.png)
+
 **Settings** — pick your connection, decide whether to keep signed `.ipa` files and
 where they go, and turn on background refresh.
 
@@ -89,6 +94,11 @@ There is a full light theme too, and the sun in the title bar switches to it.
   contents straight from the file.
 - **Inject tweaks** — drop in `.deb` packages (rootful, rootless or roothide) or
   raw `.dylib` files, as many as you like. Dylibs are pulled out of `.deb`s for you.
+- **Get past the three-app limit, with LiveContainer.** One press installs
+  [LiveContainer](https://github.com/LiveContainer/LiveContainer), signs it with the
+  entitlements it needs, and hands it your signing certificate so it can sign apps on
+  the phone itself. Apps you then run inside it are not installed separately, so they
+  do not use up a slot. Verified end to end on an iPhone 8 Plus with a free Apple ID.
 - **Keep your apps working.** The Library counts down each app's 7 days, and a
   daily background task re-signs whatever is due — no need to leave iPASide open.
 - **Use more than one Apple ID.** Keep several signed in and switch without typing
@@ -121,7 +131,9 @@ them visible rather than surprising:
   Refresh**, or leave auto-refresh on.
 - **Only 3 sideloaded apps can be installed at once, per device.** Your phone counts
   every app signed by any free Apple ID, so a second account does not add slots -
-  verified on hardware, and it is the limit most people run into first.
+  verified on hardware, and it is the limit most people run into first. This is the one
+  limit here with a way around it: see **LiveContainer** above, which runs apps inside
+  itself so the phone only ever counts one.
 - You get roughly **10 App IDs per 7 days** - a separate ceiling, about registering
   identifiers rather than installing apps. The Library, and the `slots` command, show
   what you have used, and a second Apple ID gets you another ten of these.
@@ -209,6 +221,7 @@ The engine works on its own, without the app. Every command takes `--json`:
 | `login` | Apple ID sign-in (`--email`, `--code`, `--status`, `--accounts`, `--use`, `--logout`) |
 | `inspect <ipa>` | Read an IPA's identity and icon without extracting it |
 | `sideload <ipa>` | Provision, sign and install, with all the advanced options |
+| `livecontainer` | Report on LiveContainer, or set it up (`--setup`, `--download`, `--ipa`) |
 | `installs` / `refresh` / `forget` | Manage the registry and renew signatures |
 | `signed` | Report or clean up kept `.ipa` files (`--clean`) |
 | `slots` / `delete-app-id` | See and free App ID, device and certificate usage |
@@ -227,14 +240,19 @@ it is published.
 Not yet verified: a full install over Wi-Fi (talking to the device over Wi-Fi does
 work), two phones attached at once, and paid developer accounts.
 
+LiveContainer is verified the same way: signed with the entitlements it needs, its
+JIT-less self-test passing, and an app installed inside it and launched. Its
+multitasking extension (`LiveProcess.appex`) is left in place but untested under a free
+profile.
+
 ## Quality
 
-**907 automated tests**, run on every push along with a full installer build:
+**970 automated tests**, run on every push along with a full installer build:
 
 | Suite | Tests | Files | What it covers |
 |---|---|---|---|
-| Engine (pytest) | 238 | 14 | Apple ID auth, provisioning, signing, `.deb` tweak extraction, install progress, device selection, multi-account, expiry, error phrasing |
-| App (Flutter) | 669 | 36 | Every view model, the engine transport, update planning, settings, the platform layer, motion, scroll |
+| Engine (pytest) | 276 | 16 | Apple ID auth, provisioning, app groups, signing, `.deb` tweak extraction, install progress, device selection, multi-account, LiveContainer entitlements, expiry, error phrasing |
+| App (Flutter) | 694 | 37 | Every view model, the engine transport, update planning, settings, the platform layer, motion, scroll |
 
 CI runs three jobs per push - `Engine tests`, `App analyze + tests`, `Build installer` -
 and lints are errors, not warnings. The badge above links to the runs.

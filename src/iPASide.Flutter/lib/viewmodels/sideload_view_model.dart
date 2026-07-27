@@ -310,48 +310,52 @@ class SideloadViewModel extends BaseViewModel {
 
   Future<void> sideload() async {
     final path = _ipaPath;
-    if (path == null || _inspection == null || isBlocked) return;
+    if (path == null || _inspection == null || isBlocked || _isRunning) return;
 
-    // Pre-flight: an unauthenticated — or unknown — session goes to sign-in.
-    LoginStatus? status;
-    try {
-      status = await _engine.loginStatus();
-    } catch (error) {
-      if (BaseViewModel.isShutdown(error)) return;
-      // A failed probe counts as signed out.
-    }
-
-    if (status == null || !status.authenticated) {
-      _navigation.navigateTo(NavKey.signIn);
-      return;
-    }
-
+    // Claimed before the first await, not after the sign-in probe below: the
+    // button is disabled while a run is on, but the guard has to hold on its own,
+    // or two calls landing in the same frame would both get past it and install
+    // the app twice over.
     _resetRun();
     _isRunning = true;
     _progress = SideloadProgressState.starting;
     notify();
 
-    // Both of these are read here rather than held as fields: this model is
-    // app-scoped, so anything cached at construction would still be the value the
-    // app started with.
-    final signed = _settings.loadSignedIpa();
-    final udid = await _devices.targetUdid();
-
-    final options = SideloadOptions(
-      udid: udid,
-      connection: _devices.connectionArg,
-      bundleId: _bundleIdOverride,
-      name: _nameOverride,
-      removeExtensions: _removeExtensions,
-      removeDeviceRestrictions: _removeDeviceRestrictions,
-      enableFileSharing: _enableFileSharing,
-      weakDylibs: _weakDylibs,
-      keepSigned: signed.keep,
-      signedDirectory: signed.directory,
-      dylibs: [for (final t in _resolvedTweaks) if (t.path != null) t.path!],
-    );
-
     try {
+      // Pre-flight: an unauthenticated — or unknown — session goes to sign-in.
+      LoginStatus? status;
+      try {
+        status = await _engine.loginStatus();
+      } catch (error) {
+        if (BaseViewModel.isShutdown(error)) return;
+        // A failed probe counts as signed out.
+      }
+
+      if (status == null || !status.authenticated) {
+        _navigation.navigateTo(NavKey.signIn);
+        return;
+      }
+
+      // Both of these are read here rather than held as fields: this model is
+      // app-scoped, so anything cached at construction would still be the value
+      // the app started with.
+      final signed = _settings.loadSignedIpa();
+      final udid = await _devices.targetUdid();
+
+      final options = SideloadOptions(
+        udid: udid,
+        connection: _devices.connectionArg,
+        bundleId: _bundleIdOverride,
+        name: _nameOverride,
+        removeExtensions: _removeExtensions,
+        removeDeviceRestrictions: _removeDeviceRestrictions,
+        enableFileSharing: _enableFileSharing,
+        weakDylibs: _weakDylibs,
+        keepSigned: signed.keep,
+        signedDirectory: signed.directory,
+        dylibs: [for (final t in _resolvedTweaks) if (t.path != null) t.path!],
+      );
+
       final result = await _engine.sideload(path, options, onProgress: _onProgress);
       if (result.status == 'installed') {
         _progress = _progress.completed();
