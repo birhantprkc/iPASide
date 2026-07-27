@@ -185,6 +185,121 @@ def test_unknown_signing_profile_is_refused():
         sideload._signing_profile("not-a-profile", TEAM, BUNDLE_ID)
 
 
+def test_post_install_delivers_the_certificate(monkeypatch):
+    """A refresh must re-deliver it, not only a first install.
+
+    LiveContainer keeps its own copy of the signing certificate. If that certificate is
+    ever reissued - Apple revoking it, or the local cache going missing - a re-sign
+    leaves LiveContainer holding one that no longer matches, and nothing reports it: the
+    app installs, launches, and only fails when it tries to sign a guest app.
+    """
+    seeded: list[tuple[dict, str | None]] = []
+    monkeypatch.setattr(
+        sideload.provision, "load_bundle", lambda: {"team_id": TEAM, "p12_path": "x"}
+    )
+    monkeypatch.setattr(
+        livecontainer,
+        "seed_certificate",
+        lambda bundle, serial=None, **kw: seeded.append((bundle, serial)) or {"seeded": True},
+    )
+
+    result = sideload._profile_post_install(livecontainer.SIGNING_PROFILE, "UDID123")
+
+    assert result == {"seeded": True}
+    assert seeded == [({"team_id": TEAM, "p12_path": "x"}, "UDID123")]
+
+
+def test_post_install_does_nothing_for_an_ordinary_sideload():
+    assert sideload._profile_post_install("not-a-profile", "UDID123") is None
+
+
+def test_post_install_outcome_is_not_recorded(monkeypatch):
+    """It describes one run, so replaying it on a refresh would be meaningless."""
+    recorded: dict = {}
+    monkeypatch.setattr(sideload.refresh, "record", lambda entry: recorded.update(entry))
+
+    # Mirrors what run_sideload builds, to pin the filter rather than the whole flow.
+    result = {"bundle_id": BUNDLE_ID, "signed_ipa": "x.ipa", "post_install": {"seeded": True}}
+    transient = ("signed_ipa", "post_install")
+    sideload.refresh.record({k: v for k, v in result.items() if k not in transient})
+
+    assert "post_install" not in recorded
+    assert "signed_ipa" not in recorded
+    assert recorded["bundle_id"] == BUNDLE_ID
+
+
+# --------------------------------------------------------------------------- #
+# Which certificate route the user is put on
+# --------------------------------------------------------------------------- #
+def test_seeding_writes_both_files_when_the_dylib_is_shipped(monkeypatch, tmp_path):
+    p12 = tmp_path / "identity.p12"
+    p12.write_bytes(b"pkcs12")
+    written: dict[str, bytes] = {}
+
+    monkeypatch.setattr(livecontainer.signing, "resolve_helper_dylib", lambda: "helper.dylib")
+    monkeypatch.setattr(
+        livecontainer,
+        "_write_documents",
+        lambda bundle_id, serial, files: written.update(files) or _noop(),
+    )
+
+    result = livecontainer.seed_certificate(
+        {"team_id": TEAM, "bundle_id": BUNDLE_ID, "p12_path": str(p12), "p12_password": "iPASide"}
+    )
+
+    assert result["automatic"] is True
+    assert set(written) == {livecontainer.CERTIFICATE_NAME, livecontainer.REQUEST_NAME}
+
+
+def test_seeding_writes_only_the_p12_when_the_dylib_is_absent(monkeypatch, tmp_path):
+    """Never promise an automatic import that nothing on the device can perform."""
+    p12 = tmp_path / "identity.p12"
+    p12.write_bytes(b"pkcs12")
+    written: dict[str, bytes] = {}
+
+    monkeypatch.setattr(livecontainer.signing, "resolve_helper_dylib", lambda: None)
+    monkeypatch.setattr(
+        livecontainer,
+        "_write_documents",
+        lambda bundle_id, serial, files: written.update(files) or _noop(),
+    )
+
+    result = livecontainer.seed_certificate(
+        {"team_id": TEAM, "bundle_id": BUNDLE_ID, "p12_path": str(p12), "p12_password": "iPASide"}
+    )
+
+    assert result["automatic"] is False
+    assert set(written) == {livecontainer.CERTIFICATE_NAME}
+    assert livecontainer.CERTIFICATE_NAME in result["instructions"]
+    assert "iPASide" in result["instructions"], "the password must be shown to the user"
+
+
+def test_seeding_failure_is_reported_not_raised(monkeypatch, tmp_path):
+    """The app is already installed by then; failing the whole setup would be worse."""
+    p12 = tmp_path / "identity.p12"
+    p12.write_bytes(b"pkcs12")
+
+    monkeypatch.setattr(livecontainer.signing, "resolve_helper_dylib", lambda: "helper.dylib")
+
+    def explode(*_args, **_kwargs):
+        raise OSError("device went away")
+
+    monkeypatch.setattr(livecontainer, "_write_documents", explode)
+
+    result = livecontainer.seed_certificate(
+        {"team_id": TEAM, "bundle_id": BUNDLE_ID, "p12_path": str(p12), "p12_password": "iPASide"}
+    )
+
+    assert result["seeded"] is False
+    assert result["automatic"] is False
+    assert "device went away" in result["error"]
+    assert result["instructions"], "a manual route must still be offered"
+
+
+async def _noop() -> None:
+    """Stand-in for the awaitable _write_documents returns."""
+
+
 def test_setup_refuses_an_ipa_that_is_not_livecontainer(monkeypatch, tmp_path):
     """Signing something else with LiveContainer's entitlements makes no sense."""
     monkeypatch.setattr(

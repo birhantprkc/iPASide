@@ -156,6 +156,25 @@ def _signing_profile(
     raise SideloadError(f"Unknown signing profile '{name}'.")
 
 
+def _profile_post_install(name: str, udid: str) -> dict[str, Any] | None:
+    """Whatever a named signing profile still has to do once the app is on the device.
+
+    Runs after a refresh as much as after a first install, which is the whole point.
+    LiveContainer keeps its own copy of the signing certificate, so a re-sign that
+    reissued that certificate - Apple revoking it, or the cached one going missing -
+    would otherwise leave LiveContainer holding one that no longer matches, and nothing
+    would say so: it installs, launches, and only fails when it tries to sign.
+
+    Never raises. The app is already installed by this point, so a failure here is worth
+    reporting, not worth undoing a successful install over.
+    """
+    if name == "livecontainer":
+        from . import livecontainer
+
+        return livecontainer.seed_certificate(provision.load_bundle(), udid)
+    return None
+
+
 def _as_signed_dir(directory: str | None) -> Path:
     """The folder signed IPAs live in: the caller's choice, or the app's own.
 
@@ -304,6 +323,11 @@ def run_sideload(
             udid,
             progress=lambda u: progress("install", *_install_relay(u, target_name)),
         )
+
+        post_install: dict[str, Any] | None = None
+        if profile:
+            progress("finalize", None, "Finishing setup\u2026")
+            post_install = _profile_post_install(profile, udid)
     finally:
         # Scratch always goes, kept signed IPA or not: it is an unpacked copy of the
         # whole app, worth hundreds of MB, and nothing reads it after signing.
@@ -334,13 +358,16 @@ def run_sideload(
         "signed_ipa": output if keep_signed else None,
         "installed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "expires_at": expires_at,
+        "post_install": post_install,
     }
     if record:
         # Everything but signed_ipa: `signed --clean` can remove that file at any
         # time, and refresh re-signs from source_ipa, so recording it would only
-        # put a path in the registry that quietly stops being true.
+        # put a path in the registry that quietly stops being true. post_install is
+        # likewise the outcome of this one run, not something to replay.
+        _transient = ("signed_ipa", "post_install")
         refresh.record({
-            **{key: value for key, value in result.items() if key != "signed_ipa"},
+            **{key: value for key, value in result.items() if key not in _transient},
             "options": {
                 "bundle_id": bundle_id,
                 "display_name": display_name,

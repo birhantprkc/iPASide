@@ -277,15 +277,22 @@ async def _write_documents(
 
 
 def seed_certificate(
-    bundle: dict[str, Any], serial: str | None = None, *, automatic: bool = True
+    bundle: dict[str, Any], serial: str | None = None, *, automatic: bool | None = None
 ) -> dict[str, Any]:
     """Put the signing certificate where LiveContainer can pick it up.
 
     Always writes the bare ``.p12``, which is what LiveContainer's own
-    Settings -> Import Certificate reads, so a manual import is possible either way.
-    When ``automatic``, also writes the request the injected dylib consumes, which
-    removes both files once it has stored the certificate.
+    Settings -> Import Certificate reads. It is rewritten on every install and refresh
+    and the dylib leaves it alone, so the manual route stays available on the device even
+    if the stored certificate is later removed or rejected.
+
+    ``automatic`` also writes the request the injected dylib consumes. Left as None it
+    follows whether this build actually ships that dylib - claiming the certificate will
+    import itself when nothing is there to do it would be worse than saying nothing.
     """
+    if automatic is None:
+        automatic = signing.resolve_helper_dylib() is not None
+
     files = {CERTIFICATE_NAME: Path(bundle["p12_path"]).read_bytes()}
     if automatic:
         files[REQUEST_NAME] = _import_request(bundle)
@@ -348,10 +355,9 @@ def setup(
             f"LiveContainer. Download it from {PROJECT_URL}/releases."
         )
 
-    # The signing profile injects this; we only need to know whether it is there, to
-    # decide between writing the import request and asking the user to import by hand.
+    # The signing profile injects this and delivers the certificate afterwards; we only
+    # read it here to report which route the user is on.
     helper = signing.resolve_helper_dylib()
-    automatic = automatic_certificate and helper is not None
 
     result = sideload.run_sideload(
         ipa_path,
@@ -367,25 +373,32 @@ def setup(
         on_progress=progress,
     )
 
-    progress("certificate", None, "Handing LiveContainer the certificate\u2026")
-    bundle = provision.load_bundle()
-    certificate = seed_certificate(bundle, result.get("udid"), automatic=automatic)
+    # Delivered by the profile's post-install step, so that a refresh does it too rather
+    # than only a first install. Asking for a manual import re-does it with the request
+    # left out, which is cheap - both writes are a few KB over USB.
+    certificate = result.get("post_install") or {}
+    if not automatic_certificate and certificate.get("seeded"):
+        certificate = seed_certificate(
+            provision.load_bundle(), result.get("udid"), automatic=False
+        )
 
     return {
         **result,
         "livecontainer_version": info.get("version"),
         "certificate": certificate,
         "helper_dylib": helper,
-        "launch_required": automatic and certificate.get("seeded"),
+        "launch_required": bool(certificate.get("automatic")),
     }
 
 
 def status(serial: str | None = None) -> dict[str, Any]:
     """Report whether LiveContainer is installed and whether it holds a certificate.
 
-    The certificate itself lives in the app group, which cannot be read from here, so
-    the honest answer is drawn from what *is* visible: a pending request means the dylib
-    has not run yet, and neither file present means it has been consumed.
+    The certificate itself lives in the app group, which cannot be read from here, so the
+    honest answer is drawn from what *is* visible in Documents. A pending request means
+    the dylib has not run yet; its absence means the certificate was stored. The ``.p12``
+    is expected to be there either way - it is left behind on purpose so a manual import
+    is always possible - so it says nothing about whether setup finished.
     """
     installed = apps.list_installed(serial)
     entry = next(
