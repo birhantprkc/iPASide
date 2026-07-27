@@ -61,6 +61,81 @@ class EngineApi {
         _asObject(LiveContainerStatus.fromJson),
       );
 
+  /// The apps running inside LiveContainer, which use none of the three app slots.
+  Future<List<GuestApp>> liveContainerGuests({
+    String? udid,
+    String? connection,
+  }) =>
+      _runTyped<List<GuestApp>>(
+        <String>['livecontainer', ..._targetArgs(udid, connection), '--apps'],
+        (Object data) => data is List
+            ? <GuestApp>[
+                for (final Object? item in data)
+                  if (item is Map<String, dynamic>) GuestApp.fromJson(item),
+              ]
+            : null,
+      );
+
+  /// Puts an app inside LiveContainer instead of installing it on the phone.
+  ///
+  /// Streams `upload` progress. LiveContainer signs it on device afterwards, so nothing
+  /// here is provisioned or signed and no app slot is used.
+  Future<GuestAppInstall> installGuestApp(
+    String path, {
+    String? udid,
+    String? connection,
+    void Function(SideloadProgress progress)? onProgress,
+  }) =>
+      _runTyped<GuestAppInstall>(
+        <String>['livecontainer', ..._targetArgs(udid, connection), '--add', path],
+        _asObject(GuestAppInstall.fromJson),
+        onProgress: _progressPump(onProgress),
+      );
+
+  /// Removes an app from inside LiveContainer.
+  Future<void> removeGuestApp(
+    String bundleId, {
+    String? udid,
+    String? connection,
+  }) =>
+      _runVoid(<String>[
+        'livecontainer',
+        ..._targetArgs(udid, connection),
+        '--remove',
+        bundleId,
+      ]);
+
+  // ---- Developer account ------------------------------------------------- //
+
+  /// What one Apple ID's developer account holds: certificates, App IDs, devices.
+  ///
+  /// [email] picks between signed-in Apple IDs; omitted, the active one.
+  Future<AccountOverview> accountOverview({String? email}) =>
+      _runTyped<AccountOverview>(
+        <String>['slots', ..._emailArgs(email)],
+        _asObject(AccountOverview.fromJson),
+      );
+
+  /// Revokes a development certificate.
+  ///
+  /// Destructive and not undoable: every app that certificate signed stops opening, and
+  /// it may belong to another tool entirely. The result says which case it was.
+  Future<RevokedCertificate> revokeCertificate(
+    String serial, {
+    String? email,
+  }) =>
+      _runTyped<RevokedCertificate>(
+        <String>['revoke-cert', serial, ..._emailArgs(email)],
+        _asObject(RevokedCertificate.fromJson),
+      );
+
+  /// Deletes a registered app identifier.
+  ///
+  /// Frees the name, not one of the week's registrations - Apple counts those over a
+  /// rolling seven days.
+  Future<void> deleteAppId(String appIdId, {String? email}) =>
+      _runVoid(<String>['delete-app-id', appIdId, ..._emailArgs(email)]);
+
   /// Installs LiveContainer and hands it the signing certificate.
   ///
   /// With no [ipaPath] the engine downloads the newest release itself, which is
@@ -427,6 +502,15 @@ class EngineApi {
   /// `--connection` is omitted for automatic, which is the engine's own default
   /// (prefer USB, fall back to Wi-Fi), following this file's rule that a flag is
   /// spelled out only where the choice departs from the default.
+  /// `--email` only when a specific Apple ID is meant; omitted means the active one.
+  static List<String> _emailArgs(String? email) {
+    final String? trimmed = email?.trim();
+    if (trimmed == null || trimmed.isEmpty) {
+      return const <String>[];
+    }
+    return <String>['--email', trimmed];
+  }
+
   static List<String> _targetArgs(String? udid, [String? connection]) {
     final List<String> args = <String>[];
     if (udid != null && udid.trim().isNotEmpty) {

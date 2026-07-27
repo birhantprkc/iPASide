@@ -559,6 +559,383 @@ class SideloadResult {
       'bundleId: $bundleId)';
 }
 
+/// One development certificate on a team, and who registered it.
+///
+/// Apple scopes its certificate limit per machine rather than per account, so one team
+/// routinely holds several - iPASide's alongside Xcode's on a Mac and SideStore's on a
+/// phone. Revoking one stops every app *it* signed from opening, which may belong to a
+/// different tool, so who owns each is the part that matters.
+class AccountCertificate {
+  /// Creates a certificate entry.
+  const AccountCertificate({
+    this.serial,
+    this.name,
+    this.machine,
+    this.type,
+    this.expires,
+    this.ours = false,
+    this.inUseHere = false,
+  });
+
+  /// Parses one element of `slots`' `certificates`.
+  factory AccountCertificate.fromJson(Map<String, dynamic> json) =>
+      AccountCertificate(
+        serial: jsonString(json, 'serial'),
+        name: jsonString(json, 'name'),
+        machine: jsonString(json, 'machine'),
+        type: jsonString(json, 'type'),
+        expires: jsonDateTime(json, 'expires'),
+        ours: jsonBool(json, 'ours'),
+        inUseHere: jsonBool(json, 'in_use_here'),
+      );
+
+  /// Serial number, which is what identifies it to Apple.
+  final String? serial;
+
+  /// Apple's own name for it, e.g. `iOS Development: Someone`.
+  final String? name;
+
+  /// The machine that registered it - how one tool's is told from another's.
+  final String? machine;
+
+  /// Certificate type, e.g. `iOS Development`.
+  final String? type;
+
+  /// When Apple stops honouring it; null when the engine reported nothing readable.
+  final DateTime? expires;
+
+  /// Registered by iPASide, on this machine or another.
+  final bool ours;
+
+  /// The one this machine holds the private key for and signs with now. Revoking it
+  /// stops the apps installed from here from opening.
+  final bool inUseHere;
+
+  /// Who registered it, in words for a person rather than a machine name.
+  String get owner {
+    if (inUseHere) return 'iPASide · signing with it now';
+    if (ours) return 'iPASide · another machine';
+    return machine ?? 'Unknown';
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AccountCertificate &&
+          other.serial == serial &&
+          other.name == name &&
+          other.machine == machine &&
+          other.type == type &&
+          other.expires == expires &&
+          other.ours == ours &&
+          other.inUseHere == inUseHere;
+
+  @override
+  int get hashCode =>
+      Object.hash(serial, name, machine, type, expires, ours, inUseHere);
+
+  @override
+  String toString() => 'AccountCertificate(serial: $serial, owner: $owner)';
+}
+
+/// One registered app identifier.
+class AccountAppId {
+  /// Creates an app identifier entry.
+  const AccountAppId({this.id, this.identifier, this.name});
+
+  /// Parses one element of `slots`' `app_ids`.
+  factory AccountAppId.fromJson(Map<String, dynamic> json) => AccountAppId(
+        id: jsonString(json, 'id'),
+        identifier: jsonString(json, 'identifier'),
+        name: jsonString(json, 'name'),
+      );
+
+  /// Apple's internal id, which is what deleting it takes.
+  final String? id;
+
+  /// The identifier itself, e.g. `com.example.app.TEAMID`.
+  final String? identifier;
+
+  /// Display name it was registered under.
+  final String? name;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AccountAppId &&
+          other.id == id &&
+          other.identifier == identifier &&
+          other.name == name;
+
+  @override
+  int get hashCode => Object.hash(id, identifier, name);
+
+  @override
+  String toString() => 'AccountAppId(identifier: $identifier)';
+}
+
+/// One device registered to the team.
+class AccountDevice {
+  /// Creates a device entry.
+  const AccountDevice({this.id, this.name, this.udid});
+
+  /// Parses one element of `slots`' `devices`.
+  factory AccountDevice.fromJson(Map<String, dynamic> json) => AccountDevice(
+        id: jsonString(json, 'id'),
+        name: jsonString(json, 'name'),
+        udid: jsonString(json, 'udid'),
+      );
+
+  /// Apple's internal id.
+  final String? id;
+
+  /// Name the device was registered under.
+  final String? name;
+
+  /// Its UDID.
+  final String? udid;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AccountDevice &&
+          other.id == id &&
+          other.name == name &&
+          other.udid == udid;
+
+  @override
+  int get hashCode => Object.hash(id, name, udid);
+
+  @override
+  String toString() => 'AccountDevice(udid: $udid)';
+}
+
+/// What one Apple ID's developer account holds.
+class AccountOverview {
+  /// Creates an overview.
+  const AccountOverview({
+    this.account,
+    this.teamId,
+    this.teamName,
+    this.teamType,
+    this.certificates = const <AccountCertificate>[],
+    this.appIds = const <AccountAppId>[],
+    this.devices = const <AccountDevice>[],
+    this.registeredAppIds = 0,
+    this.weeklyAppIdLimit = 10,
+  });
+
+  /// Parses a `slots` payload.
+  factory AccountOverview.fromJson(Map<String, dynamic> json) {
+    final Map<String, dynamic> team = jsonObject(json, 'team');
+    return AccountOverview(
+      account: jsonString(json, 'account'),
+      teamId: jsonString(team, 'id'),
+      teamName: jsonString(team, 'name'),
+      teamType: jsonString(team, 'type'),
+      certificates: jsonObjectList(json, 'certificates', AccountCertificate.fromJson),
+      appIds: jsonObjectList(json, 'app_ids', AccountAppId.fromJson),
+      devices: jsonObjectList(json, 'devices', AccountDevice.fromJson),
+      registeredAppIds: jsonInt(json, 'registered_app_ids'),
+      weeklyAppIdLimit: jsonInt(json, 'weekly_app_id_limit', orElse: 10),
+    );
+  }
+
+  /// The Apple ID this describes.
+  final String? account;
+
+  /// Team identifier, name and kind.
+  final String? teamId;
+  final String? teamName;
+  final String? teamType;
+
+  /// Certificates on the team. Read-only.
+  final List<AccountCertificate> certificates;
+
+  /// App identifiers currently registered. Read-only.
+  final List<AccountAppId> appIds;
+
+  /// Devices on the team. Read-only.
+  final List<AccountDevice> devices;
+
+  /// How many identifiers exist now.
+  final int registeredAppIds;
+
+  /// How many *new* identifiers Apple allows per rolling 7 days.
+  ///
+  /// Deliberately not a fraction with [registeredAppIds]: that ceiling counts
+  /// registrations over a week, while the list is what exists. Shown as one number they
+  /// read as spare capacity that may already be spent.
+  final int weeklyAppIdLimit;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AccountOverview &&
+          other.account == account &&
+          other.teamId == teamId &&
+          other.teamName == teamName &&
+          other.teamType == teamType &&
+          _listEquals(other.certificates, certificates) &&
+          _listEquals(other.appIds, appIds) &&
+          _listEquals(other.devices, devices) &&
+          other.registeredAppIds == registeredAppIds &&
+          other.weeklyAppIdLimit == weeklyAppIdLimit;
+
+  @override
+  int get hashCode => Object.hash(
+        account,
+        teamId,
+        teamName,
+        teamType,
+        Object.hashAll(certificates),
+        Object.hashAll(appIds),
+        Object.hashAll(devices),
+        registeredAppIds,
+        weeklyAppIdLimit,
+      );
+
+  @override
+  String toString() => 'AccountOverview(account: $account, team: $teamId, '
+      'certificates: ${certificates.length})';
+}
+
+/// What revoking a certificate cost.
+class RevokedCertificate {
+  /// Creates a revocation outcome.
+  const RevokedCertificate({
+    this.serial,
+    this.machine,
+    this.wasOurs = false,
+    this.invalidatesLocalApps = false,
+  });
+
+  /// Parses a `revoke-cert` payload.
+  factory RevokedCertificate.fromJson(Map<String, dynamic> json) =>
+      RevokedCertificate(
+        serial: jsonString(json, 'revoked'),
+        machine: jsonString(json, 'machine'),
+        wasOurs: jsonBool(json, 'was_ours'),
+        invalidatesLocalApps: jsonBool(json, 'invalidates_local_apps'),
+      );
+
+  /// The serial that was revoked.
+  final String? serial;
+
+  /// The machine that had registered it.
+  final String? machine;
+
+  /// Whether iPASide registered it.
+  final bool wasOurs;
+
+  /// Whether the apps installed from this machine have just stopped working.
+  final bool invalidatesLocalApps;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RevokedCertificate &&
+          other.serial == serial &&
+          other.machine == machine &&
+          other.wasOurs == wasOurs &&
+          other.invalidatesLocalApps == invalidatesLocalApps;
+
+  @override
+  int get hashCode => Object.hash(serial, machine, wasOurs, invalidatesLocalApps);
+
+  @override
+  String toString() => 'RevokedCertificate(serial: $serial, '
+      'invalidatesLocalApps: $invalidatesLocalApps)';
+}
+
+/// One app running inside LiveContainer rather than installed on the phone.
+class GuestApp {
+  /// Creates a guest app entry.
+  const GuestApp({this.bundleId, this.folder});
+
+  /// Parses one element of `livecontainer --apps`.
+  factory GuestApp.fromJson(Map<String, dynamic> json) => GuestApp(
+        bundleId: jsonString(json, 'bundle_id'),
+        folder: jsonString(json, 'folder'),
+      );
+
+  /// The app's own identifier.
+  final String? bundleId;
+
+  /// The folder it lives in inside LiveContainer.
+  final String? folder;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is GuestApp && other.bundleId == bundleId && other.folder == folder;
+
+  @override
+  int get hashCode => Object.hash(bundleId, folder);
+
+  @override
+  String toString() => 'GuestApp(bundleId: $bundleId)';
+}
+
+/// The outcome of putting an app inside LiveContainer.
+class GuestAppInstall {
+  /// Creates a guest-install outcome.
+  const GuestAppInstall({
+    this.status,
+    this.bundleId,
+    this.name,
+    this.version,
+    this.files = 0,
+    this.bytes = 0,
+  });
+
+  /// Parses a `livecontainer --add` payload.
+  factory GuestAppInstall.fromJson(Map<String, dynamic> json) => GuestAppInstall(
+        status: jsonString(json, 'status'),
+        bundleId: jsonString(json, 'bundle_id'),
+        name: jsonString(json, 'name'),
+        version: jsonString(json, 'version'),
+        files: jsonInt(json, 'files'),
+        bytes: jsonInt(json, 'bytes'),
+      );
+
+  /// `installed` on success.
+  final String? status;
+
+  /// The app's identifier.
+  final String? bundleId;
+
+  /// Its display name.
+  final String? name;
+
+  /// Its version.
+  final String? version;
+
+  /// How many files were copied, and how many bytes.
+  final int files;
+  final int bytes;
+
+  /// Whether it landed.
+  bool get isInstalled => status == 'installed';
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is GuestAppInstall &&
+          other.status == status &&
+          other.bundleId == bundleId &&
+          other.name == name &&
+          other.version == version &&
+          other.files == files &&
+          other.bytes == bytes;
+
+  @override
+  int get hashCode => Object.hash(status, bundleId, name, version, files, bytes);
+
+  @override
+  String toString() => 'GuestAppInstall(bundleId: $bundleId, name: $name)';
+}
+
 /// Whether LiveContainer is installed, and how far its setup got.
 ///
 /// The certificate itself lives in a shared app group that cannot be read from a

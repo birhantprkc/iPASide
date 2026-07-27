@@ -9,6 +9,7 @@ enum NavKey {
   library('library'),
   apps('apps'),
   liveContainer('livecontainer'),
+  account('account'),
   diagnostics('diagnostics'),
   settings('settings');
 
@@ -40,6 +41,7 @@ class NavDestination {
     NavDestination(NavKey.library, 'Library', Icons.collections_bookmark_outlined),
     NavDestination(NavKey.apps, 'Apps', Icons.grid_view_rounded),
     NavDestination(NavKey.liveContainer, 'LiveContainer', Icons.layers_outlined),
+    NavDestination(NavKey.account, 'Account', Icons.badge_outlined),
     NavDestination(NavKey.diagnostics, 'Diagnostics', Icons.monitor_heart_outlined),
     NavDestination(NavKey.settings, 'Settings', Icons.settings_outlined),
   ];

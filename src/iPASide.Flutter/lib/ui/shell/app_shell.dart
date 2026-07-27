@@ -8,6 +8,7 @@ import '../../viewmodels/navigation_state.dart';
 import '../../viewmodels/sideload_view_model.dart';
 import '../../viewmodels/theme_controller.dart';
 import '../theme/app_theme.dart';
+import '../views/account_view.dart';
 import '../views/apps_view.dart';
 import '../views/diagnostics_view.dart';
 import '../views/home_view.dart';
@@ -92,6 +93,7 @@ class _AppShellState extends State<AppShell> {
     NavKey.library => const LibraryView(),
     NavKey.apps => const AppsView(),
     NavKey.liveContainer => const LiveContainerView(),
+    NavKey.account => const AccountView(),
     NavKey.diagnostics => const DiagnosticsView(),
     NavKey.settings => const SettingsView(),
   };
