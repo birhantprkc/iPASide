@@ -12,6 +12,8 @@ No jailbreak. No paid developer account. No closed-source middleman.
 [![License](https://img.shields.io/badge/license-MIT-informational?style=for-the-badge)](LICENSE)
 [![Windows](https://img.shields.io/badge/Windows%2010%2F11-64--bit-blue?style=for-the-badge)](#get-started)
 [![Website](https://img.shields.io/badge/ipaside.com-visit-8c5cf0?style=for-the-badge)](https://ipaside.com)
+[![CI](https://img.shields.io/github/actions/workflow/status/pwnapplehat/iPASide/ci.yml?branch=main&style=for-the-badge&label=CI)](https://github.com/pwnapplehat/iPASide/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-907-4cc38a?style=for-the-badge)](#quality)
 
 *Open source, end to end. Nothing between your Apple ID and Apple.*
 
@@ -224,6 +226,24 @@ it is published.
 
 Not yet verified: a full install over Wi-Fi (talking to the device over Wi-Fi does
 work), two phones attached at once, and paid developer accounts.
+
+## Quality
+
+**907 automated tests**, run on every push along with a full installer build:
+
+| Suite | Tests | Files | What it covers |
+|---|---|---|---|
+| Engine (pytest) | 238 | 14 | Apple ID auth, provisioning, signing, `.deb` tweak extraction, install progress, device selection, multi-account, expiry, error phrasing |
+| App (Flutter) | 669 | 36 | Every view model, the engine transport, update planning, settings, the platform layer, motion, scroll |
+
+CI runs three jobs per push - `Engine tests`, `App analyze + tests`, `Build installer` -
+and lints are errors, not warnings. The badge above links to the runs.
+
+What tests cannot cover is a real phone, so each release is also driven by hand against
+an iPhone 8 Plus on iOS 16.7.15 over both USB and Wi-Fi before it is published. Several
+things in the changelog were found that way rather than by reasoning: the free-account
+three-app ceiling is per *device* and not per Apple ID, and a background refresh really
+does re-sign and reinstall with the app closed.
 
 ## Legal
 
