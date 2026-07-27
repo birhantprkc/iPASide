@@ -110,12 +110,10 @@ class _StatusCard extends StatelessWidget {
           : Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                // Only once it is on the phone: before that there is no icon to show,
-                // and a placeholder square would just be a hole in the layout.
-                if (vm.isInstalled) ...<Widget>[
-                  AppIconImage(bytes: vm.icon, size: Sizes.appIcon),
-                  const SizedBox(width: Space.s4),
-                ],
+                // Shown whether or not it is installed - it is the same app either way,
+                // and seeing it is most useful before you have it.
+                const AppIconImage.asset('assets/brand/livecontainer.png'),
+                const SizedBox(width: Space.s4),
                 Expanded(child: _StatusBody(vm: vm)),
               ],
             ),

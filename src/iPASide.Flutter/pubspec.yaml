@@ -69,6 +69,7 @@ flutter:
   assets:
     - assets/brand/mark.png
     - assets/brand/mark-hero.png
+    - assets/brand/livecontainer.png
 
   fonts:
     - family: Inter

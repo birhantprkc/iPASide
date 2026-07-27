@@ -199,7 +199,6 @@ class _IpaSideAppState extends State<IpaSideApp> with WindowListener {
     devices: _devices,
     picker: _picker,
     dialogs: _dialogs,
-    icons: _icons,
   );
 
   late final DropRouter _dropRouter = DropRouter(

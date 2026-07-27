@@ -13,7 +13,19 @@ class AppIconImage extends StatelessWidget {
     required this.bytes,
     this.size = Sizes.appIcon,
     this.radius,
-  });
+  }) : asset = null;
+
+  /// An icon iPASide ships rather than reads off a device.
+  ///
+  /// For an app whose icon is fixed and known - LiveContainer - which means it can be
+  /// shown before that app is installed, which is exactly when somebody wants to see what
+  /// they are about to install, and costs no device round trip for decoration.
+  const AppIconImage.asset(
+    String this.asset, {
+    super.key,
+    this.size = Sizes.appIcon,
+    this.radius,
+  }) : bytes = null;
 
   /// The proportion of an icon's side that iOS rounds off.
   ///
@@ -24,6 +36,10 @@ class AppIconImage extends StatelessWidget {
   static const double _cornerRatio = 0.2237;
 
   final Uint8List? bytes;
+
+  /// A bundled asset path, when built with [AppIconImage.asset].
+  final String? asset;
+
   final double size;
 
   /// Corner radius, defaulting to iOS's own proportion of [size].
@@ -35,6 +51,23 @@ class AppIconImage extends StatelessWidget {
   Widget build(BuildContext context) {
     final p = context.palette;
     final data = bytes;
+
+    final String? path = asset;
+    if (path != null) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(_radius),
+        // No cacheWidth: it makes Flutter's decoder shrink the file, and its scaler is
+        // cruder than the one that cut these variants. The artwork already ships at the
+        // sizes drawn here, one per device pixel ratio.
+        child: Image.asset(
+          path,
+          width: size,
+          height: size,
+          fit: BoxFit.cover,
+          filterQuality: FilterQuality.medium,
+        ),
+      );
+    }
 
     if (data == null) {
       return Container(

@@ -4,7 +4,6 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ipaside/engine/engine.dart';
 import 'package:ipaside/services/file_picker.dart';
-import 'package:ipaside/services/icon_cache.dart';
 import 'package:ipaside/services/settings_store.dart';
 import 'package:ipaside/ui/shell/app_dialogs.dart';
 import 'package:ipaside/ui/shell/nav_destination.dart';
@@ -224,7 +223,6 @@ LiveContainerViewModel _model(
     devices: devices ?? _noDevice(),
     picker: picker ?? _FakePicker(),
     dialogs: dialogs ?? _FakeDialogs(),
-    icons: IconCache(),
   );
   addTearDown(vm.dispose);
   return vm;
