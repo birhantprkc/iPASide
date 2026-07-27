@@ -433,14 +433,25 @@ async def _push_bundle(
                 await service.makedirs(f"{target}/{directory}")
 
             written = 0
-            for rel, payload in sorted(files.items()):
+            reported = -1
+            count = len(files)
+            for index, (rel, payload) in enumerate(sorted(files.items()), 1):
                 await service.set_file_contents(f"{target}/{rel}", payload)
                 written += len(payload)
-                percent = round(written * 100 / total) if total else None
+                percent = round(written * 100 / total) if total else 0
+
+                # Only when the number moves. An app bundle is hundreds of files, and a
+                # frame per file floods the progress stream to say the same thing.
+                if percent == reported and index != count:
+                    continue
+                reported = percent
                 progress(
                     "upload",
                     percent,
-                    f"Copying into LiveContainer \u00b7 "
+                    # File counts as well as megabytes, because a bundle's size is
+                    # usually concentrated in one or two files: the byte percentage can
+                    # sit still through hundreds of small ones and look stalled.
+                    f"Copying into LiveContainer \u00b7 {index} / {count} files \u00b7 "
                     f"{written // (1 << 20)} / {total // (1 << 20)} MB",
                 )
     finally:

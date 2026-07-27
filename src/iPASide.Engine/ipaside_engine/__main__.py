@@ -41,6 +41,18 @@ from .errors import EngineError
 
 _STATUS_GLYPH = {"ok": "[ OK ]", "warn": "[WARN]", "fail": "[FAIL]"}
 
+# SideStore runs an iOS Shortcut by this exact name after a refresh, to drop the local
+# tunnel it needed. The name is hardcoded in SideStore, and when no such Shortcut exists
+# the Shortcuts app opens with "could not find the shortcut". The refresh still completes -
+# it is noise, not a failure - but it is alarming noise, and only the user can fix it:
+# Shortcuts cannot be created from a PC.
+SIDESTORE_SHORTCUT_NOTE = (
+    "SideStore also runs an iOS Shortcut named exactly 'TurnOffData' when it finishes, to "
+    "disconnect the local tunnel. If you have not made one, Shortcuts will open with an "
+    "error - the refresh still worked. Create a Shortcut with that name containing a "
+    "disconnect-VPN action to silence it."
+)
+
 
 def _force_utf8() -> None:
     """Force UTF-8 stdout/stderr.
@@ -414,21 +426,72 @@ def _cmd_sideload(args: argparse.Namespace) -> int:
     return 0
 
 
+def _livecontainer_host(args: argparse.Namespace) -> str:
+    """The installed LiveContainer's bundle id, or a ``LiveContainerError`` saying why not."""
+    state = livecontainer.status(args.udid)
+    if not state.get("installed"):
+        raise livecontainer.LiveContainerError(
+            "LiveContainer is not installed on this device. Run `livecontainer --setup` "
+            "first; apps run inside it, so it has to be there before one can be added."
+        )
+    return str(state["bundle_id"])
+
+
 def _cmd_livecontainer(args: argparse.Namespace) -> int:
-    """Report on LiveContainer, download it, or set it up end to end."""
+    """Report on LiveContainer, set it up, or manage the apps running inside it."""
+    if args.add:
+        host = _livecontainer_host(args)
+        result = livecontainer.install_guest(
+            args.add, host, args.udid, on_progress=_progress_to_stderr()
+        )
+        if args.json:
+            _emit(args, result)
+            return 0
+        print(f"Added {result['name']} to LiveContainer ({result['bundle_id']}).")
+        print(
+            "It is not installed on the phone, so it uses none of your three app slots. "
+            "Open LiveContainer and it will sign it on first launch."
+        )
+        return 0
+
+    if args.remove:
+        host = _livecontainer_host(args)
+        livecontainer.remove_guest(args.remove, host, args.udid)
+        if args.json:
+            _emit(args, {"status": "removed", "bundle_id": args.remove})
+        else:
+            print(f"Removed {args.remove} from LiveContainer.")
+        return 0
+
+    if args.apps:
+        host = _livecontainer_host(args)
+        guests = livecontainer.guest_apps(host, args.udid)
+        if args.json:
+            _emit(args, guests)
+            return 0
+        if not guests:
+            print("No apps inside LiveContainer yet. Add one with --add <ipa>.")
+            return 0
+        print(f"{len(guests)} app(s) inside LiveContainer, using no app slots:")
+        for guest in guests:
+            print(f"  {guest['bundle_id']}")
+        return 0
+
     if args.download and not args.setup:
-        result = livecontainer.download(args.dir, on_progress=_progress_to_stderr())
+        result = livecontainer.download(
+            args.dir, variant=args.variant, on_progress=_progress_to_stderr()
+        )
         if args.json:
             _emit(args, result)
         else:
-            print(f"Downloaded LiveContainer {result['version']} to {result['path']}")
+            print(f"Downloaded {result['asset_name']} ({result['version']}) to {result['path']}")
         return 0
 
     if args.setup:
         ipa_path = args.ipa
         if not ipa_path:
             ipa_path = livecontainer.download(
-                args.dir, on_progress=_progress_to_stderr()
+                args.dir, variant=args.variant, on_progress=_progress_to_stderr()
             )["path"]
         result = livecontainer.setup(
             ipa_path,
@@ -454,6 +517,21 @@ def _cmd_livecontainer(args: argparse.Namespace) -> int:
         else:
             print(f"The certificate could not be delivered: {certificate.get('error')}")
             print(certificate["instructions"])
+
+        pairing = result.get("pairing") or {}
+        if result.get("has_sidestore"):
+            if pairing.get("paired"):
+                print(
+                    "This build carries SideStore, and it has been given this PC's "
+                    "pairing file, so it can refresh apps on the phone itself."
+                )
+            else:
+                print(
+                    "This build carries SideStore, but the pairing file could not be "
+                    f"delivered ({pairing.get('error')}), so on-device refresh will not "
+                    "work until it is."
+                )
+            print(f"  {SIDESTORE_SHORTCUT_NOTE}")
         return 0
 
     result = livecontainer.status(args.udid)
@@ -471,6 +549,10 @@ def _cmd_livecontainer(args: argparse.Namespace) -> int:
         print("  Installed but never opened.")
     else:
         print("  Set up. Its certificate is stored in the shared app group.")
+    guests = livecontainer.guest_apps(str(result["bundle_id"]), args.udid)
+    print(f"  {len(guests)} app(s) inside it, using no app slots.")
+    for guest in guests:
+        print(f"      {guest['bundle_id']}")
     return 0
 
 
@@ -1186,6 +1268,23 @@ def build_parser() -> argparse.ArgumentParser:
     lc_parser.add_argument(
         "--manual-certificate", action="store_true",
         help="leave the .p12 for LiveContainer's own Settings instead of importing it",
+    )
+    lc_parser.add_argument(
+        "--variant", choices=livecontainer.VARIANTS, default=livecontainer.VARIANT_SIDESTORE,
+        help="which build to fetch: 'sidestore' carries a store that can refresh on the "
+             "phone itself, 'plain' is smaller and cannot (default: sidestore)",
+    )
+    lc_parser.add_argument(
+        "--apps", action="store_true",
+        help="list the apps running inside LiveContainer (these use no app slots)",
+    )
+    lc_parser.add_argument(
+        "--add", default=None, metavar="IPA",
+        help="put an .ipa inside LiveContainer instead of installing it on the phone",
+    )
+    lc_parser.add_argument(
+        "--remove", default=None, metavar="BUNDLE_ID",
+        help="remove an app from inside LiveContainer",
     )
 
     sub.add_parser("installs", parents=[common], help="list apps iPASide has sideloaded (with expiry)")
