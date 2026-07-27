@@ -229,18 +229,22 @@ def test_post_install_delivers_the_certificate(monkeypatch):
         lambda bundle, serial=None, **kw: seeded.append((bundle, serial)) or {"seeded": True},
     )
 
-    result = sideload._profile_post_install(livecontainer.SIGNING_PROFILE, "UDID123")
+    result = sideload._profile_post_install(
+        livecontainer.SIGNING_PROFILE, "UDID123", "LiveContainer.ipa"
+    )
 
     assert result["certificate"] == {"seeded": True}
     assert seeded[0][1] == "UDID123"
 
 
 def test_post_install_does_nothing_for_an_ordinary_sideload():
-    assert sideload._profile_post_install("not-a-profile", "UDID123") is None
+    assert (
+        sideload._profile_post_install("not-a-profile", "UDID123", "App.ipa") is None
+    )
 
 
-def test_only_the_sidestore_build_is_handed_a_pairing_file(monkeypatch):
-    """It is a credential for this PC's pairing, so it goes only where it is needed."""
+def _post_install_with(monkeypatch, *, sidestore: bool) -> tuple[dict, list[str]]:
+    """Run the post-install step against a build that does or does not carry SideStore."""
     delivered: list[str] = []
     monkeypatch.setattr(
         sideload.provision,
@@ -250,30 +254,62 @@ def test_only_the_sidestore_build_is_handed_a_pairing_file(monkeypatch):
     monkeypatch.setattr(
         livecontainer, "seed_certificate", lambda *a, **k: {"seeded": True}
     )
+    monkeypatch.setattr(livecontainer, "has_sidestore", lambda _path: sidestore)
     monkeypatch.setattr(
         livecontainer,
         "deliver_pairing",
         lambda bundle_id, udid, serial=None: delivered.append(udid) or {"paired": True},
     )
-
-    plain = sideload._profile_post_install(livecontainer.SIGNING_PROFILE, "UDID123")
-    assert plain.get("pairing") is None
-    assert delivered == []
-
-    with_store = sideload._profile_post_install(
-        livecontainer.SIGNING_PROFILE_SIDESTORE, "UDID123"
+    outcome = sideload._profile_post_install(
+        livecontainer.SIGNING_PROFILE, "UDID123", "LiveContainer.ipa"
     )
-    assert with_store["pairing"] == {"paired": True}
+    return outcome, delivered
+
+
+def test_only_a_build_carrying_sidestore_is_handed_a_pairing_file(monkeypatch):
+    """It is a credential for this PC's pairing, so it goes only where it is usable."""
+    outcome, delivered = _post_install_with(monkeypatch, sidestore=True)
+
+    assert outcome["pairing"] == {"paired": True}
     assert delivered == ["UDID123"]
 
 
-def test_both_profiles_sign_identically():
-    """They differ in what happens after the install, not in how the app is signed."""
-    plain = sideload._signing_profile(livecontainer.SIGNING_PROFILE, TEAM, BUNDLE_ID)
-    store = sideload._signing_profile(
-        livecontainer.SIGNING_PROFILE_SIDESTORE, TEAM, BUNDLE_ID
+def test_a_plain_build_gets_no_pairing_file(monkeypatch):
+    outcome, delivered = _post_install_with(monkeypatch, sidestore=False)
+
+    assert outcome.get("pairing") is None
+    assert delivered == []
+
+
+def test_the_need_for_a_pairing_file_is_read_from_the_ipa_not_the_profile_name(
+    monkeypatch,
+):
+    """One profile name covers both builds, on purpose.
+
+    Encoding the build in the name would put a label in the refresh registry that a
+    record written by an older iPASide does not carry - and a refresh reading that record
+    would then quietly stop delivering the pairing file to a phone that needs it.
+    """
+    seen: list[str] = []
+    monkeypatch.setattr(
+        sideload.provision,
+        "load_bundle",
+        lambda: {"team_id": TEAM, "p12_path": "x", "bundle_id": BUNDLE_ID},
     )
-    assert plain == store
+    monkeypatch.setattr(
+        livecontainer, "seed_certificate", lambda *a, **k: {"seeded": True}
+    )
+    monkeypatch.setattr(
+        livecontainer, "has_sidestore", lambda path: seen.append(path) or False
+    )
+
+    sideload._profile_post_install(
+        livecontainer.SIGNING_PROFILE, "UDID123", r"D:\ipas\LiveContainer+SideStore.ipa"
+    )
+
+    assert seen == [r"D:\ipas\LiveContainer+SideStore.ipa"], (
+        "the artifact being signed is what decides it"
+    )
 
 
 @pytest.mark.parametrize(

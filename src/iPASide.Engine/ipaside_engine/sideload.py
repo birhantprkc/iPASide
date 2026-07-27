@@ -164,9 +164,7 @@ def _signing_profile(
     """
     from . import livecontainer  # imported here: livecontainer builds on this module
 
-    if name in (livecontainer.SIGNING_PROFILE, livecontainer.SIGNING_PROFILE_SIDESTORE):
-        # Identical either way: the two profiles differ only in what happens after the
-        # install, not in how the app is signed.
+    if name == livecontainer.SIGNING_PROFILE:
         helper = signing.resolve_helper_dylib()
         return (
             livecontainer.app_group_identifiers(team_id),
@@ -176,7 +174,7 @@ def _signing_profile(
     raise SideloadError(f"Unknown signing profile '{name}'.")
 
 
-def _profile_post_install(name: str, udid: str) -> dict[str, Any] | None:
+def _profile_post_install(name: str, udid: str, ipa_path: str) -> dict[str, Any] | None:
     """Whatever a named signing profile still has to do once the app is on the device.
 
     Runs after a refresh as much as after a first install, which is the whole point.
@@ -185,15 +183,17 @@ def _profile_post_install(name: str, udid: str) -> dict[str, Any] | None:
     would otherwise leave LiveContainer holding one that no longer matches, and nothing
     would say so: it installs, launches, and only fails when it tries to sign.
 
+    What else is needed is read from ``ipa_path``, the app actually being signed, rather
+    than from the profile name. Only some LiveContainer builds carry SideStore and so need
+    a pairing file, and the artifact is the truth about that: a name recorded by an older
+    build would say nothing, and a refresh would silently stop delivering it.
+
     Never raises. The app is already installed by this point, so a failure here is worth
     reporting, not worth undoing a successful install over.
     """
     from . import livecontainer
 
-    if name not in (
-        livecontainer.SIGNING_PROFILE,
-        livecontainer.SIGNING_PROFILE_SIDESTORE,
-    ):
+    if name != livecontainer.SIGNING_PROFILE:
         return None
 
     bundle = provision.load_bundle()
@@ -201,10 +201,9 @@ def _profile_post_install(name: str, udid: str) -> dict[str, Any] | None:
         "certificate": livecontainer.seed_certificate(bundle, udid)
     }
 
-    # Only the SideStore build has anything to do with a pairing file, and it is a
-    # credential for this PC's pairing with the phone - so it goes to a device that
-    # actually needs it, and nowhere else.
-    if name == livecontainer.SIGNING_PROFILE_SIDESTORE:
+    # A pairing file is a credential for this PC's pairing with the phone, so it goes only
+    # to a build that has a store able to use it.
+    if livecontainer.has_sidestore(ipa_path):
         outcome["pairing"] = livecontainer.deliver_pairing(
             bundle["bundle_id"], udid, udid
         )
@@ -401,7 +400,7 @@ def run_sideload(
         post_install: dict[str, Any] | None = None
         if profile:
             progress("finalize", None, "Finishing setup\u2026")
-            post_install = _profile_post_install(profile, udid)
+            post_install = _profile_post_install(profile, udid, ipa_path)
     finally:
         # Scratch always goes, kept signed IPA or not: it is an unpacked copy of the
         # whole app, worth hundreds of MB, and nothing reads it after signing.

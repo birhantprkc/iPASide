@@ -82,14 +82,13 @@ VARIANT_SIDESTORE = "sidestore"
 VARIANT_PLAIN = "plain"
 VARIANTS = (VARIANT_SIDESTORE, VARIANT_PLAIN)
 
-#: Names of the signing profiles :mod:`ipaside_engine.sideload` resolves for LiveContainer.
+#: Name of the signing profile :mod:`ipaside_engine.sideload` resolves for LiveContainer.
 #:
-#: Two, differing only in what happens after the install: the SideStore build is also
-#: handed a pairing file. Which one was used has to be recorded, because a refresh
-#: reinstalls the app and takes its container - and the pairing file with it - so the
-#: refresh has to know to put it back.
+#: One name for both builds. Whether a pairing file is needed is read from the IPA being
+#: signed, not from this - see :func:`has_sidestore`. Encoding it in the name would put a
+#: label in the refresh registry that a record written by an older build does not carry,
+#: and a refresh would then quietly stop delivering the pairing file.
 SIGNING_PROFILE = "livecontainer"
-SIGNING_PROFILE_SIDESTORE = "livecontainer-sidestore"
 
 _TIMEOUTS = (20, 60)
 _CHUNK_BYTES = 1 << 20
@@ -723,7 +722,7 @@ def setup(
         remove_uisd=False,
         keep_signed=keep_signed,
         signed_dir=signed_dir,
-        profile=SIGNING_PROFILE_SIDESTORE if sidestore else SIGNING_PROFILE,
+        profile=SIGNING_PROFILE,
         on_progress=progress,
     )
 
@@ -775,11 +774,22 @@ def status(serial: str | None = None) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 - a locked or busy device is not a failure here
         documents = []
 
+    # Which build is on the phone cannot be read from the container - its frameworks are in
+    # the app bundle, which house_arrest does not vend - so the answer comes from the IPA
+    # the refresh registry recorded, which is the file that was signed and installed.
+    from . import refresh as refresh_module
+
+    record = refresh_module.get(entry["bundle_id"]) or {}
+    source = record.get("source_ipa")
+    sidestore = bool(source) and has_sidestore(str(source))
+
     return {
         "installed": True,
         "bundle_id": entry["bundle_id"],
         "name": entry.get("name"),
         "version": entry.get("version"),
+        "has_sidestore": sidestore,
+        "pairing_present": PAIRING_NAME in documents,
         "certificate_pending": REQUEST_NAME in documents,
         "certificate_file_present": CERTIFICATE_NAME in documents,
         # LiveContainer creates these on first launch, so their absence means it has
