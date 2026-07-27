@@ -19,6 +19,7 @@ from typing import Any
 
 from . import (
     __version__,
+    account,
     anisette,
     apple_support,
     apps,
@@ -569,45 +570,81 @@ def _cmd_forget(args: argparse.Namespace) -> int:
 
 
 def _cmd_slots(args: argparse.Namespace) -> int:
-    try:
-        team = developer.list_teams()[0]
-        team_id = team["teamId"]
-        app_ids = developer.list_app_ids(team_id)
-        payload = {
-            "team_id": team_id,
-            "team_name": team.get("name"),
-            "team_type": team.get("type"),
-            "app_ids": app_ids,
-            "app_id_count": len(app_ids),
-            "app_id_limit": 10,  # free accounts: 10 App IDs / rolling 7 days
-            "devices": developer.list_devices(team_id),
-            "certificates": developer.list_certificates(team_id),
-        }
-    except (gsa.GsaError, developer.DeveloperServicesError) as exc:
-        _emit(args, {"status": "error", "error": str(exc)}) if args.json else print(f"error: {exc}")
-        return 1
-
+    """What one Apple ID's developer account holds. Reporting only; see revoke-cert."""
+    report = account.overview(args.email)
     if args.json:
-        _emit(args, payload)
+        _emit(args, report)
         return 0
-    print(f"Team {payload['team_name']} ({team_id}) - {payload['team_type']}")
-    print(f"App IDs: {payload['app_id_count']}/{payload['app_id_limit']}")
-    for app_id in app_ids:
-        print(f"  {app_id.get('identifier'):<45} {app_id.get('name', '')}")
+
+    team = report["team"]
+    print(f"Apple ID {report['account']}")
+    print(f"Team {team['name']} ({team['id']}) - {team['type']}")
+
+    print()
+    print(f"Certificates ({len(report['certificates'])}):")
+    for cert in report["certificates"]:
+        # Whose it is decides whether revoking it is housekeeping or sabotage.
+        if cert["in_use_here"]:
+            owner = "iPASide (this machine - signing with it now)"
+        elif cert["ours"]:
+            owner = "iPASide (another machine)"
+        else:
+            owner = cert["machine"] or "unknown"
+        print(f"  {cert['serial']}  expires {cert['expires']}")
+        print(f"      {cert['type']}  -  {owner}")
+
+    print()
+    # Deliberately not printed as "N/10": the ten is a ceiling on new registrations over a
+    # rolling week, and this is how many exist. Shown as one fraction it reads as spare
+    # capacity that may already be spent, which is exactly how somebody gets surprised.
+    print(f"App IDs registered: {report['registered_app_ids']}")
+    for app_id in report["app_ids"]:
+        print(f"  {app_id['identifier']:<45} {app_id['name'] or ''}")
+    print(
+        f"  (Apple also allows about {report['weekly_app_id_limit']} *new* identifiers "
+        "per 7 days, counted separately from the list above.)"
+    )
+
+    print()
+    print(f"Devices ({len(report['devices'])}):")
+    for device_entry in report["devices"]:
+        print(f"  {device_entry['udid']}  {device_entry['name'] or ''}")
     return 0
 
 
 def _cmd_delete_app_id(args: argparse.Namespace) -> int:
-    try:
-        team_id = developer.list_teams()[0]["teamId"]
-        developer.delete_app_id(team_id, args.app_id)
-    except (gsa.GsaError, developer.DeveloperServicesError) as exc:
-        _emit(args, {"status": "error", "error": str(exc)}) if args.json else print(f"error: {exc}")
-        return 1
+    result = account.delete_app_id(args.app_id, args.email)
     if args.json:
-        _emit(args, {"ok": True, "app_id": args.app_id})
-    else:
-        print("Deleted App ID.")
+        _emit(args, result)
+        return 0
+    print(f"Deleted {result['identifier'] or result['deleted']}.")
+    # Said every time, because the obvious reading is the wrong one: the identifier is
+    # free to re-use, but Apple's ~10 per week counts registrations, not what exists.
+    print(
+        "That frees the identifier, but not one of this week's registrations - Apple "
+        "counts those over a rolling seven days."
+    )
+    return 0
+
+
+def _cmd_revoke_cert(args: argparse.Namespace) -> int:
+    """Revoke a certificate, having said whose it was."""
+    result = account.revoke_certificate(args.serial, args.email)
+    if args.json:
+        _emit(args, result)
+        return 0
+    print(f"Revoked {result['revoked']} ({result['machine'] or 'unknown machine'}).")
+    if result["invalidates_local_apps"]:
+        print(
+            "That is the certificate iPASide signs with on this machine, so the apps it "
+            "installed will stop opening. Sideload or refresh one to get a new one, and "
+            "LiveContainer will be handed the replacement automatically."
+        )
+    elif not result["was_ours"]:
+        print(
+            "That certificate belonged to another tool, so anything it signed will stop "
+            "opening until that tool issues itself a new one."
+        )
     return 0
 
 
@@ -921,6 +958,7 @@ _HANDLERS = {
     "forget": _cmd_forget,
     "slots": _cmd_slots,
     "delete-app-id": _cmd_delete_app_id,
+    "revoke-cert": _cmd_revoke_cert,
     "inspect": _cmd_inspect,
     "prepare": _cmd_prepare,
     "install": _cmd_install,
@@ -1182,12 +1220,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     forget_parser.add_argument("bundle_id", help="installed bundle id to forget")
 
-    sub.add_parser("slots", parents=[common], help="show developer-account App ID / device / cert usage")
+    slots_parser = sub.add_parser(
+        "slots", parents=[common],
+        help="show or tidy up an Apple ID's certificates, App IDs and devices",
+    )
+    slots_parser.add_argument(
+        "--email", default=None,
+        help="which signed-in Apple ID to report on (default: the active one)",
+    )
+
+    revoke_parser = sub.add_parser(
+        "revoke-cert", parents=[common],
+        help="revoke a development certificate (stops the apps it signed from opening)",
+    )
+    revoke_parser.add_argument("serial", help="serial number, from `slots`")
+    revoke_parser.add_argument(
+        "--email", default=None,
+        help="which signed-in Apple ID owns it (default: the active one)",
+    )
 
     delete_app_id_parser = sub.add_parser(
-        "delete-app-id", parents=[common], help="delete a registered App ID (frees a free-account slot)"
+        "delete-app-id", parents=[common],
+        help="delete a registered app identifier (frees the name, not the weekly quota)",
     )
     delete_app_id_parser.add_argument("app_id", help="the appIdId to delete (from `slots`)")
+    delete_app_id_parser.add_argument(
+        "--email", default=None,
+        help="which signed-in Apple ID owns it (default: the active one)",
+    )
 
     prepare_parser = sub.add_parser(
         "prepare", parents=[common], help="strip/patch an IPA for sideloading (before signing)"
