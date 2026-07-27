@@ -107,13 +107,37 @@ def test_is_livecontainer(bundle_id, expected):
 # --------------------------------------------------------------------------- #
 # Release asset selection
 # --------------------------------------------------------------------------- #
-def test_asset_selection_prefers_the_plain_ipa():
-    assets = [
-        {"name": "LiveContainer.TrollStore.ipa", "size": 1},
-        {"name": "LiveContainer.ipa", "size": 2},
-        {"name": "LiveContainer.JB.ipa", "size": 3},
-    ]
-    assert livecontainer._pick_asset(assets)["name"] == "LiveContainer.ipa"
+RELEASE_ASSETS = [
+    {"name": "LiveContainer.TrollStore.ipa", "size": 1},
+    {"name": "LiveContainer.ipa", "size": 2},
+    {"name": "LiveContainer+SideStore.ipa", "size": 3},
+    {"name": "LiveContainer.JB.ipa", "size": 4},
+]
+
+
+def test_the_sidestore_build_is_the_default():
+    """It is what lets the phone refresh itself, and costs no extra app slot."""
+    assert livecontainer._pick_asset(RELEASE_ASSETS)["name"] == (
+        "LiveContainer+SideStore.ipa"
+    )
+
+
+def test_the_plain_build_can_be_asked_for_by_name():
+    assert livecontainer._pick_asset(RELEASE_ASSETS, livecontainer.VARIANT_PLAIN)[
+        "name"
+    ] == "LiveContainer.ipa"
+
+
+def test_a_missing_variant_is_not_quietly_swapped_for_the_other():
+    """The two differ in whether the phone can refresh itself, so substituting lies."""
+    only_plain = [{"name": "LiveContainer.ipa"}]
+    assert livecontainer._pick_asset(only_plain, livecontainer.VARIANT_SIDESTORE) is None
+    assert livecontainer._pick_asset(only_plain, livecontainer.VARIANT_PLAIN) is not None
+
+
+def test_an_unknown_variant_is_refused():
+    with pytest.raises(livecontainer.LiveContainerError, match="Unknown LiveContainer"):
+        livecontainer.latest_release("nonsense")
 
 
 def test_asset_selection_skips_builds_we_cannot_provision():
@@ -195,7 +219,9 @@ def test_post_install_delivers_the_certificate(monkeypatch):
     """
     seeded: list[tuple[dict, str | None]] = []
     monkeypatch.setattr(
-        sideload.provision, "load_bundle", lambda: {"team_id": TEAM, "p12_path": "x"}
+        sideload.provision,
+        "load_bundle",
+        lambda: {"team_id": TEAM, "p12_path": "x", "bundle_id": BUNDLE_ID},
     )
     monkeypatch.setattr(
         livecontainer,
@@ -205,12 +231,74 @@ def test_post_install_delivers_the_certificate(monkeypatch):
 
     result = sideload._profile_post_install(livecontainer.SIGNING_PROFILE, "UDID123")
 
-    assert result == {"seeded": True}
-    assert seeded == [({"team_id": TEAM, "p12_path": "x"}, "UDID123")]
+    assert result["certificate"] == {"seeded": True}
+    assert seeded[0][1] == "UDID123"
 
 
 def test_post_install_does_nothing_for_an_ordinary_sideload():
     assert sideload._profile_post_install("not-a-profile", "UDID123") is None
+
+
+def test_only_the_sidestore_build_is_handed_a_pairing_file(monkeypatch):
+    """It is a credential for this PC's pairing, so it goes only where it is needed."""
+    delivered: list[str] = []
+    monkeypatch.setattr(
+        sideload.provision,
+        "load_bundle",
+        lambda: {"team_id": TEAM, "p12_path": "x", "bundle_id": BUNDLE_ID},
+    )
+    monkeypatch.setattr(
+        livecontainer, "seed_certificate", lambda *a, **k: {"seeded": True}
+    )
+    monkeypatch.setattr(
+        livecontainer,
+        "deliver_pairing",
+        lambda bundle_id, udid, serial=None: delivered.append(udid) or {"paired": True},
+    )
+
+    plain = sideload._profile_post_install(livecontainer.SIGNING_PROFILE, "UDID123")
+    assert plain.get("pairing") is None
+    assert delivered == []
+
+    with_store = sideload._profile_post_install(
+        livecontainer.SIGNING_PROFILE_SIDESTORE, "UDID123"
+    )
+    assert with_store["pairing"] == {"paired": True}
+    assert delivered == ["UDID123"]
+
+
+def test_both_profiles_sign_identically():
+    """They differ in what happens after the install, not in how the app is signed."""
+    plain = sideload._signing_profile(livecontainer.SIGNING_PROFILE, TEAM, BUNDLE_ID)
+    store = sideload._signing_profile(
+        livecontainer.SIGNING_PROFILE_SIDESTORE, TEAM, BUNDLE_ID
+    )
+    assert plain == store
+
+
+@pytest.mark.parametrize(
+    ("entries", "expected"),
+    [
+        (["Payload/LiveContainer.app/Frameworks/SideStoreApp.framework/SideStore"], True),
+        (["Payload/LiveContainer.app/Frameworks/OpenSSL.framework/OpenSSL"], False),
+        ([], False),
+    ],
+)
+def test_has_sidestore_is_read_from_the_bundle(tmp_path, entries, expected):
+    """Read from the archive, not the file name, which a user may have renamed."""
+    import zipfile
+
+    path = tmp_path / "LiveContainer.ipa"
+    with zipfile.ZipFile(path, "w") as archive:
+        for name in entries:
+            archive.writestr(name, b"x")
+    assert livecontainer.has_sidestore(str(path)) is expected
+
+
+def test_has_sidestore_of_an_unreadable_file_is_false(tmp_path):
+    path = tmp_path / "broken.ipa"
+    path.write_bytes(b"not a zip")
+    assert livecontainer.has_sidestore(str(path)) is False
 
 
 def test_post_install_outcome_is_not_recorded(monkeypatch):

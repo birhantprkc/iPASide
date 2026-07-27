@@ -29,7 +29,8 @@ from __future__ import annotations
 
 import asyncio
 import plistlib
-from pathlib import Path
+import zipfile
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 import requests
@@ -59,8 +60,36 @@ PROJECT_URL = "https://github.com/LiveContainer/LiveContainer"
 REQUEST_NAME = "iPASide-cert-import.plist"
 CERTIFICATE_NAME = "iPASide-certificate.p12"
 
-#: Name of the signing profile :mod:`ipaside_engine.sideload` resolves for LiveContainer.
+#: Where LiveContainer keeps the apps it runs inside itself, under its own Documents.
+#: Reachable over house_arrest, which is what lets iPASide put an app there directly.
+GUEST_APPS_DIR = "/Documents/Applications"
+
+#: SideStore's container, virtualised by LiveContainer as one of its guest apps.
+SIDESTORE_DOCUMENTS = "/Documents/SideStore/Documents"
+
+#: What SideStore and AltStore call a pairing file. Placed in SideStore's own Documents so
+#: it is found on launch, and in LiveContainer's, which the Files app exposes, so it can
+#: still be picked by hand if the first location ever stops being right.
+PAIRING_NAME = "ALTPairingFile.mobiledevicepairing"
+
+#: Where usbmux keeps the pairing records this PC has for its devices.
+_LOCKDOWN_DIR = Path(r"C:\ProgramData\Apple\Lockdown")
+
+#: Release builds. The SideStore one carries a whole store inside the same bundle id, so
+#: it costs no extra app slot, and its refresh is exposed as an App Intent - meaning a
+#: Shortcut can run it on a schedule with no PC involved.
+VARIANT_SIDESTORE = "sidestore"
+VARIANT_PLAIN = "plain"
+VARIANTS = (VARIANT_SIDESTORE, VARIANT_PLAIN)
+
+#: Names of the signing profiles :mod:`ipaside_engine.sideload` resolves for LiveContainer.
+#:
+#: Two, differing only in what happens after the install: the SideStore build is also
+#: handed a pairing file. Which one was used has to be recorded, because a refresh
+#: reinstalls the app and takes its container - and the pairing file with it - so the
+#: refresh has to know to put it back.
 SIGNING_PROFILE = "livecontainer"
+SIGNING_PROFILE_SIDESTORE = "livecontainer-sidestore"
 
 _TIMEOUTS = (20, 60)
 _CHUNK_BYTES = 1 << 20
@@ -110,11 +139,37 @@ def is_livecontainer(info: dict[str, Any]) -> bool:
     return str(info.get("bundle_id") or "").startswith(BUNDLE_PREFIX)
 
 
+def has_sidestore(ipa_path: str) -> bool:
+    """Whether this LiveContainer build carries SideStore inside it.
+
+    Read from the bundle rather than taken from the file name, which a user may have
+    renamed: the SideStore build ships SideStoreApp.framework, and that framework is what
+    gives the phone a store able to refresh on its own.
+    """
+    try:
+        with zipfile.ZipFile(ipa_path) as archive:
+            return any(
+                "SideStoreApp.framework/" in name for name in archive.namelist()
+            )
+    except (OSError, zipfile.BadZipFile):
+        return False
+
+
 # --------------------------------------------------------------------------- #
 # Getting hold of the IPA
 # --------------------------------------------------------------------------- #
-def latest_release() -> dict[str, Any]:
-    """Describe LiveContainer's newest release, without downloading it."""
+def latest_release(variant: str = VARIANT_SIDESTORE) -> dict[str, Any]:
+    """Describe LiveContainer's newest release, without downloading it.
+
+    ``variant`` picks between the two builds each release carries - see
+    :data:`VARIANTS`. The SideStore one is the default because it is what makes an
+    on-device refresh possible, and it costs nothing extra: the store lives inside the
+    same bundle id, so the phone still counts one installed app.
+    """
+    if variant not in VARIANTS:
+        raise LiveContainerError(
+            f"Unknown LiveContainer build '{variant}'. Choose one of: {', '.join(VARIANTS)}."
+        )
     try:
         response = requests.get(RELEASES_URL, timeout=_TIMEOUTS)
         response.raise_for_status()
@@ -125,11 +180,12 @@ def latest_release() -> dict[str, Any]:
             "Check your connection, or download the IPA yourself and pick it."
         ) from exc
 
-    asset = _pick_asset(release.get("assets") or [])
+    asset = _pick_asset(release.get("assets") or [], variant)
     if asset is None:
+        wanted = "with SideStore" if variant == VARIANT_SIDESTORE else "without SideStore"
         raise LiveContainerError(
-            f"LiveContainer {release.get('tag_name') or 'latest'} has no .ipa attached. "
-            f"Download it from {PROJECT_URL}/releases and pick the file."
+            f"LiveContainer {release.get('tag_name') or 'latest'} has no .ipa {wanted} "
+            f"attached. Download one from {PROJECT_URL}/releases and pick the file."
         )
     return {
         "version": release.get("tag_name"),
@@ -139,24 +195,35 @@ def latest_release() -> dict[str, Any]:
         "asset_name": asset.get("name"),
         "url": asset.get("browser_download_url"),
         "bytes": asset.get("size"),
+        "variant": variant,
     }
 
 
-def _pick_asset(assets: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Choose the plain LiveContainer IPA from a release's assets.
+def _pick_asset(
+    assets: list[dict[str, Any]], variant: str = VARIANT_SIDESTORE
+) -> dict[str, Any] | None:
+    """Choose one LiveContainer build from a release's assets.
 
-    Releases carry several builds; the sideloading one is the unadorned ``.ipa``. Any
-    asset naming a variant we cannot provision - notably the TrollStore/jailbreak builds,
-    which expect entitlements a free profile will never grant - is skipped so a download
-    cannot silently pick something that installs and then will not run.
+    A release carries `LiveContainer.ipa` and `LiveContainer+SideStore.ipa`, and telling
+    them apart matters: only the second can refresh itself on the phone. Any asset naming
+    a variant we cannot provision - notably the TrollStore/jailbreak builds, which expect
+    entitlements a free profile will never grant - is skipped, so a download cannot
+    silently pick something that installs and then will not run.
     """
     candidates = [a for a in assets if str(a.get("name", "")).lower().endswith(".ipa")]
     excluded = ("trollstore", "jb", "jailbreak", "debug")
-    preferred = [
+    usable = [
         a for a in candidates
         if not any(word in str(a.get("name", "")).lower() for word in excluded)
     ]
-    pool = preferred or candidates
+
+    def has_sidestore(asset: dict[str, Any]) -> bool:
+        return "sidestore" in str(asset.get("name", "")).lower()
+
+    wanted = [a for a in usable if has_sidestore(a) == (variant == VARIANT_SIDESTORE)]
+    # Nothing matching the requested build is a real answer, not a reason to hand back
+    # the other one: they differ in whether the phone can refresh itself.
+    pool = wanted or ([] if usable else candidates)
     # Shortest name wins: "LiveContainer.ipa" over "LiveContainer.Something.ipa".
     return min(pool, key=lambda a: len(str(a.get("name", "")))) if pool else None
 
@@ -262,16 +329,120 @@ def _import_request(bundle: dict[str, Any]) -> bytes:
 
 
 async def _write_documents(
-    bundle_id: str, serial: str | None, files: dict[str, bytes]
-) -> None:
-    """Write files into an installed app's Documents directory over house_arrest."""
+    bundle_id: str,
+    serial: str | None,
+    files: dict[str, bytes],
+    *,
+    directories: tuple[str, ...] = ("/Documents",),
+) -> list[str]:
+    """Write files into an installed app's container over house_arrest.
+
+    Each name is written into every directory given, and directories are created first:
+    on a fresh install a guest app's container does not exist until that app has been
+    opened once, and writing early is what stops it having to ask for the file at all.
+    """
+    from pymobiledevice3.services.house_arrest import HouseArrestService
+
+    written: list[str] = []
+    client = await lockdown.create(serial)
+    try:
+        async with await HouseArrestService.create(client, bundle_id) as service:
+            for directory in directories:
+                await service.makedirs(directory)
+                for name, payload in files.items():
+                    target = f"{directory}/{name}"
+                    await service.set_file_contents(target, payload)
+                    written.append(target)
+    finally:
+        await lockdown.close(client)
+    return written
+
+
+async def _list_dir(bundle_id: str, serial: str | None, path: str) -> list[str]:
+    """One directory listing from inside an app's container."""
     from pymobiledevice3.services.house_arrest import HouseArrestService
 
     client = await lockdown.create(serial)
     try:
         async with await HouseArrestService.create(client, bundle_id) as service:
-            for name, payload in files.items():
-                await service.set_file_contents(f"/Documents/{name}", payload)
+            return list(await service.listdir(path))
+    finally:
+        await lockdown.close(client)
+
+
+async def _remove_tree(bundle_id: str, serial: str | None, path: str) -> None:
+    """Remove a directory and everything under it, depth first.
+
+    AFC has no recursive delete, and refuses to remove a directory that still has
+    contents, so the walk has to happen here.
+    """
+    from pymobiledevice3.services.house_arrest import HouseArrestService
+
+    client = await lockdown.create(serial)
+    try:
+        async with await HouseArrestService.create(client, bundle_id) as service:
+            await _remove_recursive(service, path)
+    finally:
+        await lockdown.close(client)
+
+
+async def _remove_recursive(service: Any, path: str) -> None:
+    try:
+        entries = await service.listdir(path)
+    except Exception:  # noqa: BLE001 - a file, or already gone
+        await service.rm_single(path)
+        return
+
+    for entry in entries:
+        if entry in (".", ".."):
+            continue
+        await _remove_recursive(service, f"{path}/{entry}")
+    await service.rm_single(path)
+
+
+async def _push_bundle(
+    bundle_id: str,
+    serial: str | None,
+    target: str,
+    files: dict[str, bytes],
+    total: int,
+    progress: ProgressFn,
+) -> None:
+    """Copy an unzipped app bundle into LiveContainer, reporting bytes as they land."""
+    from pymobiledevice3.services.house_arrest import HouseArrestService
+
+    client = await lockdown.create(serial)
+    try:
+        async with await HouseArrestService.create(client, bundle_id) as service:
+            # Replacing rather than merging: files left over from an older version of the
+            # same app would otherwise stay behind and be signed along with the new one.
+            try:
+                await service.listdir(target)
+            except Exception:  # noqa: BLE001 - not there yet, which is the normal case
+                pass
+            else:
+                await _remove_recursive(service, target)
+
+            # Every directory once, up front. AFC creates no parents on write, and doing
+            # it per file turns one round trip into thousands.
+            await service.makedirs(target)
+            directories = sorted(
+                {str(PurePosixPath(rel).parent) for rel in files} - {".", ""}
+            )
+            for directory in directories:
+                await service.makedirs(f"{target}/{directory}")
+
+            written = 0
+            for rel, payload in sorted(files.items()):
+                await service.set_file_contents(f"{target}/{rel}", payload)
+                written += len(payload)
+                percent = round(written * 100 / total) if total else None
+                progress(
+                    "upload",
+                    percent,
+                    f"Copying into LiveContainer \u00b7 "
+                    f"{written // (1 << 20)} / {total // (1 << 20)} MB",
+                )
     finally:
         await lockdown.close(client)
 
@@ -327,6 +498,177 @@ def _manual_instructions(bundle: dict[str, Any]) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# The pairing file the built-in SideStore needs
+# --------------------------------------------------------------------------- #
+def pairing_record(udid: str) -> bytes:
+    """This PC's pairing record for a device, in the form SideStore accepts.
+
+    usbmux writes every key a lockdown session needs but *not* ``UDID`` - the file name
+    carries that. SideStore is handed the file on its own, with no name to read, so
+    without the key it cannot tell which device the record is for and rejects it as
+    "invalid or missing". Adding it is the whole difference between a record that is
+    complete and one that is usable; confirmed by SideStore's own log, which lists the
+    keys it loaded.
+    """
+    exact = _LOCKDOWN_DIR / f"{udid}.plist"
+    source: Path | None = exact if exact.exists() else None
+
+    if source is None:
+        # A connected serial can be formatted differently from the file name (newer
+        # devices carry a dash), so fall back to matching a record's own UDID.
+        wanted = udid.replace("-", "").lower()
+        for path in sorted(_LOCKDOWN_DIR.glob("*.plist")):
+            try:
+                parsed = plistlib.loads(path.read_bytes())
+            except (OSError, ValueError):
+                continue
+            if str(parsed.get("UDID", "")).replace("-", "").lower() == wanted:
+                source = path
+                break
+
+    if source is None:
+        raise LiveContainerError(
+            "This PC has no pairing record for the device, so on-device refresh cannot "
+            "be set up. Reconnect it over USB and trust this computer, then try again."
+        )
+
+    try:
+        record = plistlib.loads(source.read_bytes())
+    except (OSError, ValueError) as exc:
+        raise LiveContainerError(
+            f"The pairing record at {source} could not be read: {exc}"
+        ) from exc
+
+    record.setdefault("UDID", udid)
+    # XML, as AltStore and SideStore write their own.
+    return plistlib.dumps(record, fmt=plistlib.FMT_XML)
+
+
+def deliver_pairing(bundle_id: str, udid: str, serial: str | None = None) -> dict[str, Any]:
+    """Give the built-in SideStore its pairing file, so it never asks for one.
+
+    Written to two places. SideStore's own Documents is where it looks on launch, and
+    LiveContainer's Documents is exposed by the Files app, so the file can still be picked
+    by hand if that location ever changes. On a fresh install SideStore's container does
+    not exist until it is first opened, so the directory is created rather than assumed.
+    """
+    payload = pairing_record(udid)
+    try:
+        written = asyncio.run(
+            _write_documents(
+                bundle_id,
+                serial,
+                {PAIRING_NAME: payload},
+                directories=(SIDESTORE_DOCUMENTS, "/Documents"),
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - any transport failure means the same thing
+        return {"paired": False, "error": str(exc)}
+    return {"paired": True, "bytes": len(payload), "written": written}
+
+
+# --------------------------------------------------------------------------- #
+# Apps that run inside LiveContainer
+# --------------------------------------------------------------------------- #
+def guest_apps(bundle_id: str, serial: str | None = None) -> list[dict[str, Any]]:
+    """The apps installed inside LiveContainer, which cost no app slot of their own."""
+    try:
+        names = asyncio.run(_list_dir(bundle_id, serial, GUEST_APPS_DIR))
+    except Exception:  # noqa: BLE001 - a locked or busy device is not a failure here
+        return []
+    return [
+        {"folder": name, "bundle_id": name[: -len(".app")]}
+        for name in sorted(names)
+        if name.endswith(".app")
+    ]
+
+
+def install_guest(
+    ipa_path: str,
+    bundle_id: str,
+    serial: str | None = None,
+    *,
+    on_progress: ProgressFn | None = None,
+) -> dict[str, Any]:
+    """Put an app inside LiveContainer, without installing it on the phone.
+
+    This is the whole point of LiveContainer: the phone counts one installed app however
+    many are loaded into it, so an app placed here does not use one of the three slots a
+    free Apple ID allows.
+
+    All it takes is the unzipped bundle in the right place. LiveContainer's own importer
+    does no more than move it there and then patch and sign it, and the patch is triggered
+    by the absence of its revision marker - so an app written here is picked up, patched
+    and signed by LiveContainer itself. Nothing about its private format is reproduced,
+    and it is not signed here: LiveContainer signs guest apps on device with the
+    certificate iPASide gave it.
+    """
+    progress: ProgressFn = on_progress or (lambda *_args: None)
+
+    info = ipa_module.inspect(ipa_path)
+    guest_id = info.get("bundle_id")
+    if not guest_id:
+        raise LiveContainerError(
+            f"{Path(ipa_path).name} has no bundle identifier, so LiveContainer would have "
+            "nowhere to put it."
+        )
+    if info.get("has_sc_info"):
+        raise LiveContainerError(
+            f"{Path(ipa_path).name} is App Store-encrypted (FairPlay). LiveContainer "
+            "cannot run it any more than a sideload could; use a decrypted IPA."
+        )
+
+    progress("read", None, f"Reading {Path(ipa_path).name}\u2026")
+    files = _bundle_files(ipa_path)
+    total = sum(len(data) for data in files.values())
+
+    target = f"{GUEST_APPS_DIR}/{guest_id}.app"
+    progress("upload", 0, f"Copying into LiveContainer\u2026")
+    asyncio.run(_push_bundle(bundle_id, serial, target, files, total, progress))
+
+    return {
+        "status": "installed",
+        "bundle_id": guest_id,
+        "name": info.get("display_name") or guest_id,
+        "version": info.get("version"),
+        "icon": info.get("icon"),
+        "files": len(files),
+        "bytes": total,
+        "host": bundle_id,
+    }
+
+
+def remove_guest(guest_id: str, bundle_id: str, serial: str | None = None) -> None:
+    """Delete an app from inside LiveContainer."""
+    asyncio.run(_remove_tree(bundle_id, serial, f"{GUEST_APPS_DIR}/{guest_id}.app"))
+
+
+def _bundle_files(ipa_path: str) -> dict[str, bytes]:
+    """The contents of an IPA's ``.app``, keyed by path relative to the bundle."""
+    with zipfile.ZipFile(ipa_path) as archive:
+        names = archive.namelist()
+        app_dir = next(
+            (
+                name.split("/")[1]
+                for name in names
+                if name.startswith("Payload/") and name.split("/")[1].endswith(".app")
+            ),
+            None,
+        )
+        if app_dir is None:
+            raise LiveContainerError(
+                f"{Path(ipa_path).name} has no Payload/<App>.app inside, so it is not "
+                "an app bundle LiveContainer can run."
+            )
+        prefix = f"Payload/{app_dir}/"
+        return {
+            name[len(prefix):]: archive.read(name)
+            for name in names
+            if name.startswith(prefix) and not name.endswith("/")
+        }
+
+
+# --------------------------------------------------------------------------- #
 # The whole flow
 # --------------------------------------------------------------------------- #
 def setup(
@@ -358,6 +700,7 @@ def setup(
     # The signing profile injects this and delivers the certificate afterwards; we only
     # read it here to report which route the user is on.
     helper = signing.resolve_helper_dylib()
+    sidestore = has_sidestore(ipa_path)
 
     result = sideload.run_sideload(
         ipa_path,
@@ -369,14 +712,15 @@ def setup(
         remove_uisd=False,
         keep_signed=keep_signed,
         signed_dir=signed_dir,
-        profile=SIGNING_PROFILE,
+        profile=SIGNING_PROFILE_SIDESTORE if sidestore else SIGNING_PROFILE,
         on_progress=progress,
     )
 
-    # Delivered by the profile's post-install step, so that a refresh does it too rather
-    # than only a first install. Asking for a manual import re-does it with the request
-    # left out, which is cheap - both writes are a few KB over USB.
-    certificate = result.get("post_install") or {}
+    # Both delivered by the profile's post-install step, so that a refresh does it too
+    # rather than only a first install. Asking for a manual import re-does the
+    # certificate with the request left out, which is cheap - a few KB over USB.
+    outcome = result.get("post_install") or {}
+    certificate = outcome.get("certificate", outcome)
     if not automatic_certificate and certificate.get("seeded"):
         certificate = seed_certificate(
             provision.load_bundle(), result.get("udid"), automatic=False
@@ -385,7 +729,9 @@ def setup(
     return {
         **result,
         "livecontainer_version": info.get("version"),
+        "has_sidestore": sidestore,
         "certificate": certificate,
+        "pairing": outcome.get("pairing"),
         "helper_dylib": helper,
         "launch_required": bool(certificate.get("automatic")),
     }

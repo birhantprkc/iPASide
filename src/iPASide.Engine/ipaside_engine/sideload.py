@@ -162,9 +162,11 @@ def _signing_profile(
     each record to the requirements - and the install path - that happened to be true on
     the day it was first installed.
     """
-    if name == "livecontainer":
-        from . import livecontainer  # imported here: livecontainer builds on this module
+    from . import livecontainer  # imported here: livecontainer builds on this module
 
+    if name in (livecontainer.SIGNING_PROFILE, livecontainer.SIGNING_PROFILE_SIDESTORE):
+        # Identical either way: the two profiles differ only in what happens after the
+        # install, not in how the app is signed.
         helper = signing.resolve_helper_dylib()
         return (
             livecontainer.app_group_identifiers(team_id),
@@ -186,11 +188,27 @@ def _profile_post_install(name: str, udid: str) -> dict[str, Any] | None:
     Never raises. The app is already installed by this point, so a failure here is worth
     reporting, not worth undoing a successful install over.
     """
-    if name == "livecontainer":
-        from . import livecontainer
+    from . import livecontainer
 
-        return livecontainer.seed_certificate(provision.load_bundle(), udid)
-    return None
+    if name not in (
+        livecontainer.SIGNING_PROFILE,
+        livecontainer.SIGNING_PROFILE_SIDESTORE,
+    ):
+        return None
+
+    bundle = provision.load_bundle()
+    outcome: dict[str, Any] = {
+        "certificate": livecontainer.seed_certificate(bundle, udid)
+    }
+
+    # Only the SideStore build has anything to do with a pairing file, and it is a
+    # credential for this PC's pairing with the phone - so it goes to a device that
+    # actually needs it, and nowhere else.
+    if name == livecontainer.SIGNING_PROFILE_SIDESTORE:
+        outcome["pairing"] = livecontainer.deliver_pairing(
+            bundle["bundle_id"], udid, udid
+        )
+    return outcome
 
 
 def _as_signed_dir(directory: str | None) -> Path:
