@@ -49,12 +49,20 @@ jobs:
           xcrun lipo -info "$dylib" | tee /tmp/arch.txt
           grep -q 'arm64' /tmp/arch.txt
 
-          echo "--- checking for MH_DYLIB"
+          # otool -h reports filetype numerically; 6 is MH_DYLIB. Anything else means
+          # we produced an executable or bundle, which cannot be injected.
+          echo "--- filetype must be 6 (MH_DYLIB)"
           xcrun otool -h "$dylib" | tee /tmp/hdr.txt
-          grep -qi 'DYLIB' /tmp/hdr.txt
+          filetype="$(awk 'NR==4 {print $5}' /tmp/hdr.txt)"
+          echo "filetype: $filetype"
+          test "$filetype" = "6"
 
-          echo "--- checking for a module initialiser section"
-          xcrun otool -l "$dylib" | grep -q '__mod_init_func'
+          # Where the constructor lands depends on the linker: older ld64 emits
+          # __DATA,__mod_init_func, while newer ones record initialiser offsets in
+          # __TEXT,__init_offsets instead. Either is fine; neither is not.
+          echo "--- must carry a module initialiser"
+          xcrun otool -l "$dylib" | grep -E 'sectname|segname' > /tmp/sections.txt || true
+          grep -E '__mod_init_func|__init_offsets' /tmp/sections.txt
 
           echo "--- linked libraries"
           xcrun otool -L "$dylib"
