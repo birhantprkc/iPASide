@@ -559,6 +559,199 @@ class SideloadResult {
       'bundleId: $bundleId)';
 }
 
+/// Whether LiveContainer is installed, and how far its setup got.
+///
+/// The certificate itself lives in a shared app group that cannot be read from a
+/// PC, so the engine reports what it *can* see in LiveContainer's Documents. A
+/// pending import means the injected dylib has not run yet, which it does on the
+/// next launch.
+class LiveContainerStatus {
+  /// Creates a status snapshot.
+  const LiveContainerStatus({
+    this.installed = false,
+    this.bundleId,
+    this.name,
+    this.version,
+    this.certificatePending = false,
+    this.certificateFilePresent = false,
+    this.launched = false,
+  });
+
+  /// Parses a `livecontainer` payload.
+  factory LiveContainerStatus.fromJson(Map<String, dynamic> json) =>
+      LiveContainerStatus(
+        installed: jsonBool(json, 'installed'),
+        bundleId: jsonString(json, 'bundle_id'),
+        name: jsonString(json, 'name'),
+        version: jsonString(json, 'version'),
+        certificatePending: jsonBool(json, 'certificate_pending'),
+        certificateFilePresent: jsonBool(json, 'certificate_file_present'),
+        launched: jsonBool(json, 'launched'),
+      );
+
+  /// Whether LiveContainer is on the device at all.
+  final bool installed;
+
+  /// Team-scoped identifier it was installed under.
+  final String? bundleId;
+
+  /// Display name, as the device reports it.
+  final String? name;
+
+  /// LiveContainer's own version, e.g. `3.8.0`.
+  final String? version;
+
+  /// An import is waiting for LiveContainer's next launch.
+  final bool certificatePending;
+
+  /// The certificate is on the device for a manual import. Left in place on
+  /// purpose, so this says nothing about whether setup finished.
+  final bool certificateFilePresent;
+
+  /// Whether LiveContainer has ever been opened; it builds its folders then.
+  final bool launched;
+
+  /// Installed, opened, and no import still waiting.
+  bool get isReady => installed && launched && !certificatePending;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is LiveContainerStatus &&
+          other.installed == installed &&
+          other.bundleId == bundleId &&
+          other.name == name &&
+          other.version == version &&
+          other.certificatePending == certificatePending &&
+          other.certificateFilePresent == certificateFilePresent &&
+          other.launched == launched;
+
+  @override
+  int get hashCode => Object.hash(installed, bundleId, name, version,
+      certificatePending, certificateFilePresent, launched);
+
+  @override
+  String toString() => 'LiveContainerStatus(installed: $installed, '
+      'version: $version, certificatePending: $certificatePending, '
+      'launched: $launched)';
+}
+
+/// How the signing certificate was delivered at the end of a setup.
+class LiveContainerCertificate {
+  /// Creates a delivery outcome.
+  const LiveContainerCertificate({
+    this.seeded = false,
+    this.automatic = false,
+    this.password,
+    this.instructions,
+    this.error,
+  });
+
+  /// Parses the `certificate` object of a setup payload.
+  factory LiveContainerCertificate.fromJson(Map<String, dynamic> json) =>
+      LiveContainerCertificate(
+        seeded: jsonBool(json, 'seeded'),
+        automatic: jsonBool(json, 'automatic'),
+        password: jsonString(json, 'password'),
+        instructions: jsonString(json, 'instructions'),
+        error: jsonString(json, 'error'),
+      );
+
+  /// Whether the certificate reached the device.
+  final bool seeded;
+
+  /// Whether LiveContainer will import it itself on next launch. False means the
+  /// user has to do it through LiveContainer's own Settings.
+  final bool automatic;
+
+  /// Password for a manual import.
+  final String? password;
+
+  /// What to tell the user when the import is not automatic.
+  final String? instructions;
+
+  /// Why delivery failed, when it did.
+  final String? error;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is LiveContainerCertificate &&
+          other.seeded == seeded &&
+          other.automatic == automatic &&
+          other.password == password &&
+          other.instructions == instructions &&
+          other.error == error;
+
+  @override
+  int get hashCode =>
+      Object.hash(seeded, automatic, password, instructions, error);
+
+  @override
+  String toString() => 'LiveContainerCertificate(seeded: $seeded, '
+      'automatic: $automatic, error: $error)';
+}
+
+/// The outcome of a LiveContainer setup.
+class LiveContainerSetupResult {
+  /// Creates a setup outcome.
+  const LiveContainerSetupResult({
+    this.status,
+    this.bundleId,
+    this.version,
+    this.certificate = const LiveContainerCertificate(),
+    this.launchRequired = false,
+  });
+
+  /// Parses a `livecontainer --setup` payload.
+  factory LiveContainerSetupResult.fromJson(Map<String, dynamic> json) =>
+      LiveContainerSetupResult(
+        status: jsonString(json, 'status'),
+        bundleId: jsonString(json, 'bundle_id'),
+        version: jsonString(json, 'livecontainer_version'),
+        certificate: LiveContainerCertificate.fromJson(
+          jsonObject(json, 'certificate'),
+        ),
+        launchRequired: jsonBool(json, 'launch_required'),
+      );
+
+  /// `installed` on success.
+  final String? status;
+
+  /// Identifier LiveContainer was installed under.
+  final String? bundleId;
+
+  /// LiveContainer's version, read from the IPA that was signed.
+  final String? version;
+
+  /// How the certificate was delivered.
+  final LiveContainerCertificate certificate;
+
+  /// Whether the user still has to open LiveContainer once to finish the import.
+  final bool launchRequired;
+
+  /// Whether the install itself succeeded, regardless of the certificate.
+  bool get isInstalled => status == 'installed';
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is LiveContainerSetupResult &&
+          other.status == status &&
+          other.bundleId == bundleId &&
+          other.version == version &&
+          other.certificate == certificate &&
+          other.launchRequired == launchRequired;
+
+  @override
+  int get hashCode =>
+      Object.hash(status, bundleId, version, certificate, launchRequired);
+
+  @override
+  String toString() => 'LiveContainerSetupResult(status: $status, '
+      'version: $version, launchRequired: $launchRequired)';
+}
+
 /// One file in the signed-IPA directory, from a `signed` listing.
 class SignedIpaFile {
   /// Creates a signed-IPA file entry.

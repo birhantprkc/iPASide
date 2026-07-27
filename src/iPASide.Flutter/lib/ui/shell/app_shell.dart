@@ -12,6 +12,7 @@ import '../views/apps_view.dart';
 import '../views/diagnostics_view.dart';
 import '../views/home_view.dart';
 import '../views/library_view.dart';
+import '../views/live_container_view.dart';
 import '../views/settings_view.dart';
 import '../views/sideload_view.dart';
 import '../views/sign_in_view.dart';
@@ -90,6 +91,7 @@ class _AppShellState extends State<AppShell> {
     NavKey.sideload => const SideloadView(),
     NavKey.library => const LibraryView(),
     NavKey.apps => const AppsView(),
+    NavKey.liveContainer => const LiveContainerView(),
     NavKey.diagnostics => const DiagnosticsView(),
     NavKey.settings => const SettingsView(),
   };

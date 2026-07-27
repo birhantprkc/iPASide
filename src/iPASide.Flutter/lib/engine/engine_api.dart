@@ -49,6 +49,45 @@ class EngineApi {
         onProgress: _progressPump(onProgress),
       );
 
+  // ---- LiveContainer ------------------------------------------------------ //
+
+  /// Reports whether LiveContainer is installed and how far its setup got.
+  Future<LiveContainerStatus> liveContainerStatus({
+    String? udid,
+    String? connection,
+  }) =>
+      _runTyped<LiveContainerStatus>(
+        <String>['livecontainer', ..._targetArgs(udid, connection)],
+        _asObject(LiveContainerStatus.fromJson),
+      );
+
+  /// Installs LiveContainer and hands it the signing certificate.
+  ///
+  /// With no [ipaPath] the engine downloads the newest release itself, which is
+  /// the normal route - there is no version for the caller to choose or pin.
+  /// Reports `download` and `finalize` phases either side of the usual
+  /// provision/sign/install, so drive the stepper from
+  /// [ProgressSchedule.liveContainer] rather than the sideload schedule.
+  Future<LiveContainerSetupResult> liveContainerSetup({
+    String? ipaPath,
+    String? udid,
+    String? connection,
+    bool keepSigned = false,
+    String? signedDirectory,
+    void Function(SideloadProgress progress)? onProgress,
+  }) =>
+      _runTyped<LiveContainerSetupResult>(
+        buildLiveContainerArgs(
+          ipaPath: ipaPath,
+          udid: udid,
+          connection: connection,
+          keepSigned: keepSigned,
+          signedDirectory: signedDirectory,
+        ),
+        _asObject(LiveContainerSetupResult.fromJson),
+        onProgress: _progressPump(onProgress),
+      );
+
   // ---- Apple ID / session ----------------------------------------------- //
 
   /// Starts (or, with [code], completes) an Apple ID login.
@@ -418,6 +457,32 @@ class EngineApi {
       args.add('--signed-dir');
       args.add(directory.trim());
     }
+    return args;
+  }
+
+  /// The `livecontainer --setup` argv.
+  ///
+  /// `--ipa` only when the caller has a file already; without it the engine
+  /// fetches the newest release, which is what the UI does. The signed-output pair
+  /// is included because a LiveContainer install is a sideload underneath and the
+  /// user's keep-signed preference applies to it like any other.
+  static List<String> buildLiveContainerArgs({
+    String? ipaPath,
+    String? udid,
+    String? connection,
+    bool keepSigned = false,
+    String? signedDirectory,
+  }) {
+    final List<String> args = <String>[
+      'livecontainer',
+      ..._targetArgs(udid, connection),
+      '--setup',
+    ];
+    final String? path = ipaPath?.trim();
+    if (path != null && path.isNotEmpty) {
+      args.addAll(<String>['--ipa', path]);
+    }
+    args.addAll(_signedOutputArgs(keepSigned, signedDirectory));
     return args;
   }
 

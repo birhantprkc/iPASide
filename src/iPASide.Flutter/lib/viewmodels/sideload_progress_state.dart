@@ -1,14 +1,74 @@
 import '../engine/engine.dart';
 
-/// The live state of a provision → sign → install run, in the terms the stepper
-/// draws it.
+/// The phases one kind of run reports, in the order a stepper draws them.
 ///
-/// This exists because two screens watch the same three phases: Sideload runs
-/// them directly, and Library's refresh re-signs, which *is* a sideload. Folding
-/// a frame in is the only place that knows a phase name maps to a step index, or
-/// that a percentage is only meaningful during install — so it lives here once
-/// rather than in each view model, where the two would drift the first time a
-/// phase was added.
+/// Which phase names exist, what to call them, and which of them can honestly
+/// report a percentage are all properties of the *flow*, not of the state folding
+/// its frames in. Keeping them here means a flow with different phases is a new
+/// constant rather than a second copy of [SideloadProgressState].
+class ProgressSchedule {
+  /// Creates a schedule. [steps], [phases] and [labels] are parallel lists.
+  const ProgressSchedule({
+    required this.steps,
+    required this.phases,
+    required this.labels,
+    required this.determinate,
+  });
+
+  /// Titles the stepper shows, e.g. `Provision`.
+  final List<String> steps;
+
+  /// Engine phase names, in the same order as [steps].
+  final List<String> phases;
+
+  /// Step text to fall back on for a frame that names a phase but no step.
+  final List<String> labels;
+
+  /// Phases whose reported percentage means something.
+  ///
+  /// The rest are Apple round trips or a zip, neither of which can honestly
+  /// report a share of the work done, so their bar should sweep rather than fill.
+  final Set<String> determinate;
+
+  /// Provision → sign → install: a plain sideload, and a refresh, which is one.
+  static const ProgressSchedule sideload = ProgressSchedule(
+    steps: <String>['Provision', 'Sign', 'Install'],
+    phases: <String>['provision', 'sign', 'install'],
+    labels: <String>['Provisioning\u2026', 'Signing\u2026', 'Installing\u2026'],
+    determinate: <String>{'install'},
+  );
+
+  /// A LiveContainer setup, which downloads the app first and hands it the
+  /// signing certificate afterwards.
+  static const ProgressSchedule liveContainer = ProgressSchedule(
+    steps: <String>['Download', 'Provision', 'Sign', 'Install', 'Finish'],
+    phases: <String>['download', 'provision', 'sign', 'install', 'finalize'],
+    labels: <String>[
+      'Downloading\u2026',
+      'Provisioning\u2026',
+      'Signing\u2026',
+      'Installing\u2026',
+      'Finishing\u2026',
+    ],
+    determinate: <String>{'download', 'install'},
+  );
+
+  /// The step index a phase name maps to, or null for one this flow does not draw.
+  int? indexOf(String? phase) {
+    if (phase == null) return null;
+    final int index = phases.indexOf(phase);
+    return index < 0 ? null : index;
+  }
+}
+
+/// The live state of a run, in the terms the stepper draws it.
+///
+/// This exists because several screens watch the same phases: Sideload runs them
+/// directly, Library's refresh re-signs, which *is* a sideload, and LiveContainer
+/// setup wraps one. Folding a frame in is the only place that knows a phase name
+/// maps to a step index, or that a percentage is only meaningful in some phases —
+/// so it lives here once rather than in each view model, where the copies would
+/// drift the first time a phase was added.
 class SideloadProgressState {
   /// Creates a state; the default is a run that has not reported yet.
   const SideloadProgressState({
@@ -23,60 +83,60 @@ class SideloadProgressState {
     stepText: 'Starting\u2026',
   );
 
-  /// Fallback labels for a frame that carries a phase but no step text.
+  /// Fallback labels for a plain sideload.
   static const List<String> phaseLabels = <String>[
     'Provisioning\u2026',
     'Signing\u2026',
     'Installing\u2026',
   ];
 
-  /// Index of the step in progress: 0 provision, 1 sign, 2 install.
+  /// Index of the step in progress, into the schedule's steps.
   final int activeIndex;
 
   /// What is happening right now, e.g. `Uploading to iPhone · 120 / 232 MB`.
   final String? stepText;
 
-  /// Install progress, 0–100. Only meaningful when [isIndeterminate] is false.
+  /// Progress, 0–100. Only meaningful when [isIndeterminate] is false.
   final double percent;
 
   /// Whether the work is unquantified, so the bar should sweep rather than fill.
   final bool isIndeterminate;
 
-  /// The step index a phase name maps to, or null for one we do not draw.
-  static int? indexForPhase(String? phase) => switch (phase) {
-    'provision' => 0,
-    'sign' => 1,
-    'install' => 2,
-    _ => null,
-  };
+  /// The step index a sideload phase maps to, or null for one we do not draw.
+  static int? indexForPhase(String? phase) =>
+      ProgressSchedule.sideload.indexOf(phase);
 
   /// Folds one progress frame in, returning the state after it.
   ///
-  /// A frame naming a phase we do not draw leaves the state untouched rather
-  /// than resetting the stepper to somewhere misleading.
-  SideloadProgressState apply(SideloadProgress progress) {
-    final int? index = indexForPhase(progress.phase);
+  /// A frame naming a phase the schedule does not list leaves the state untouched
+  /// rather than resetting the stepper to somewhere misleading.
+  SideloadProgressState apply(
+    SideloadProgress progress, {
+    ProgressSchedule schedule = ProgressSchedule.sideload,
+  }) {
+    final int? index = schedule.indexOf(progress.phase);
     if (index == null) return this;
 
     final String? step = progress.step;
     final double? reported = progress.percent;
-    // Determinate only during install with a number: provision and sign are
-    // Apple round trips and a zip, neither of which can honestly report a share
-    // of the work done.
-    final bool determinate = progress.phase == 'install' && reported != null;
+    final bool determinate =
+        reported != null && schedule.determinate.contains(progress.phase);
 
     return SideloadProgressState(
       activeIndex: index,
-      stepText: (step != null && step.isNotEmpty) ? step : phaseLabels[index],
+      stepText: (step != null && step.isNotEmpty) ? step : schedule.labels[index],
       percent: determinate ? reported : percent,
       isIndeterminate: !determinate,
     );
   }
 
-  /// The terminal state after a successful install.
-  SideloadProgressState completed({String stepText = 'Installed'}) =>
+  /// The terminal state after a successful run.
+  SideloadProgressState completed({
+    String stepText = 'Installed',
+    ProgressSchedule schedule = ProgressSchedule.sideload,
+  }) =>
       SideloadProgressState(
-        activeIndex: phaseLabels.length - 1,
+        activeIndex: schedule.steps.length - 1,
         stepText: stepText,
         percent: 100,
         isIndeterminate: false,

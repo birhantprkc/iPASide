@@ -28,6 +28,7 @@ import 'viewmodels/apple_support_view_model.dart';
 import 'viewmodels/device_selection.dart';
 import 'viewmodels/drop_router.dart';
 import 'viewmodels/navigation_state.dart';
+import 'viewmodels/live_container_view_model.dart';
 import 'viewmodels/sideload_view_model.dart';
 import 'viewmodels/theme_controller.dart';
 import 'viewmodels/update_view_model.dart';
@@ -188,6 +189,16 @@ class _IpaSideAppState extends State<IpaSideApp> with WindowListener {
     devices: _devices,
   );
 
+  /// App-scoped for the same reason as the sideload session: setting LiveContainer
+  /// up is a download, a sign and an install, and navigating away mid-run must not
+  /// throw the progress or the outcome away.
+  late final LiveContainerViewModel _liveContainer = LiveContainerViewModel(
+    engine: _engine,
+    navigation: _navigation,
+    settings: widget.settings,
+    devices: _devices,
+  );
+
   late final DropRouter _dropRouter = DropRouter(
     navigation: _navigation,
     target: _sideload,
@@ -222,6 +233,7 @@ class _IpaSideAppState extends State<IpaSideApp> with WindowListener {
     _updates.dispose();
     _dropRouter.dispose();
     _sideload.dispose();
+    _liveContainer.dispose();
     _appleSupport.dispose();
     _devices.dispose();
     _navigation.dispose();
@@ -253,6 +265,9 @@ class _IpaSideAppState extends State<IpaSideApp> with WindowListener {
         ChangeNotifierProvider<AccountSelection>.value(value: _accounts),
         ChangeNotifierProvider<AppleSupportViewModel>.value(value: _appleSupport),
         ChangeNotifierProvider<SideloadViewModel>.value(value: _sideload),
+        ChangeNotifierProvider<LiveContainerViewModel>.value(
+          value: _liveContainer,
+        ),
         ChangeNotifierProvider<DropRouter>.value(value: _dropRouter),
         ChangeNotifierProvider<UpdateViewModel>.value(value: _updates),
       ],

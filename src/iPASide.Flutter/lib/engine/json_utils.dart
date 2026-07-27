@@ -71,6 +71,14 @@ DateTime? jsonDateTime(Map<String, dynamic> json, String key) {
   return value is String ? DateTime.tryParse(value) : null;
 }
 
+/// Reads a nested object, yielding an empty map when it is absent or not an object.
+///
+/// Never null, for the same reason list-valued fields are not: a `fromJson`
+/// factory can recurse straight into it, and a nested model built from an empty
+/// map is exactly its all-defaults value.
+Map<String, dynamic> jsonObject(Map<String, dynamic> json, String key) =>
+    asJsonObject(json[key]) ?? const <String, dynamic>{};
+
 /// Reads an array of strings, dropping any entry that is not a string.
 List<String> jsonStringList(Map<String, dynamic> json, String key) {
   final Object? value = json[key];

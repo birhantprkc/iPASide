@@ -1,0 +1,304 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import '../../viewmodels/live_container_view_model.dart';
+import '../theme/app_theme.dart';
+import '../widgets/buttons.dart';
+import '../widgets/motion.dart';
+import '../widgets/progress.dart';
+import '../widgets/smooth_scroll.dart';
+import '../widgets/surfaces.dart';
+
+/// LiveContainer: run more than three sideloaded apps by running them inside one.
+class LiveContainerView extends StatefulWidget {
+  const LiveContainerView({super.key});
+
+  @override
+  State<LiveContainerView> createState() => _LiveContainerViewState();
+}
+
+class _LiveContainerViewState extends State<LiveContainerView> {
+  @override
+  void initState() {
+    super.initState();
+    // The model is app-scoped, so it may already hold a status - or a run in
+    // flight - from an earlier visit. Refreshing on arrival keeps what is drawn
+    // true to the device without disturbing either.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.read<LiveContainerViewModel>().load();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final LiveContainerViewModel vm = context.watch<LiveContainerViewModel>();
+
+    return SmoothScrollView(
+      padding: Pad.page,
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: Sizes.contentMax),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const Entrance(child: _Header()),
+              const SizedBox(height: Space.s5),
+              Entrance(index: 1, child: _StatusCard(vm: vm)),
+              if (vm.showStepper) ...<Widget>[
+                const SizedBox(height: Space.s5),
+                Entrance(index: 2, child: _RunCard(vm: vm)),
+              ],
+              const SizedBox(height: Space.s5),
+              const Entrance(index: 3, child: _ExplainerCard()),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Header extends StatelessWidget {
+  const _Header();
+
+  @override
+  Widget build(BuildContext context) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text('LiveContainer', style: context.t.display),
+          const SizedBox(height: Space.s1),
+          Text(
+            'Run more than three sideloaded apps, by running them inside one.',
+            style: context.t.bodyMuted,
+          ),
+        ],
+      );
+}
+
+/// What the device says, and the button that changes it.
+class _StatusCard extends StatelessWidget {
+  const _StatusCard({required this.vm});
+
+  final LiveContainerViewModel vm;
+
+  @override
+  Widget build(BuildContext context) {
+    if (vm.error != null) {
+      return Alert(
+        kind: AlertKind.danger,
+        title: "Couldn't read your iPhone",
+        message: vm.error!,
+      );
+    }
+
+    return StatusCard(
+      label: 'STATUS',
+      footer: _Action(vm: vm),
+      child: vm.isLoading && vm.status == null
+          ? const LoadingLine(label: 'Checking your iPhone\u2026')
+          : _StatusBody(vm: vm),
+    );
+  }
+}
+
+class _StatusBody extends StatelessWidget {
+  const _StatusBody({required this.vm});
+
+  final LiveContainerViewModel vm;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!vm.isInstalled) {
+      return Row(
+        children: <Widget>[
+          const Pill(label: 'Not installed', kind: PillKind.neutral),
+          const SizedBox(width: Space.s3),
+          Expanded(
+            child: Text(
+              'iPASide will fetch the latest release, sign it, and set it up.',
+              style: context.t.bodyMuted,
+            ),
+          ),
+        ],
+      );
+    }
+
+    final String version = vm.status?.version ?? '';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Row(
+          children: <Widget>[
+            Pill(
+              label: vm.needsLaunch ? 'Open it once' : 'Ready',
+              kind: vm.needsLaunch ? PillKind.warn : PillKind.ok,
+            ),
+            const SizedBox(width: Space.s3),
+            Text(
+              version.isEmpty ? 'Installed' : 'Version $version',
+              style: context.t.bodyMuted,
+            ),
+          ],
+        ),
+        const SizedBox(height: Space.s3),
+        Text(
+          vm.needsLaunch
+              ? 'Open LiveContainer on your iPhone once. It imports the signing '
+                  'certificate itself, and JIT-less mode is then ready.'
+              : 'Set up and signing on device. Add apps to it from LiveContainer '
+                  'itself, and they will not count against your three slots.',
+          style: context.t.bodyMuted,
+        ),
+      ],
+    );
+  }
+}
+
+class _Action extends StatelessWidget {
+  const _Action({required this.vm});
+
+  final LiveContainerViewModel vm;
+
+  @override
+  Widget build(BuildContext context) => Row(
+        children: <Widget>[
+          AppButton(
+            label: vm.isInstalled ? 'Reinstall' : 'Install LiveContainer',
+            icon: vm.isInstalled ? Icons.refresh_rounded : Icons.download_rounded,
+            tone: vm.isInstalled ? ButtonTone.soft : ButtonTone.primary,
+            busy: vm.isRunning,
+            onPressed: vm.isRunning ? null : vm.setUp,
+          ),
+          const SizedBox(width: Space.s3),
+          AppButton(
+            label: 'Refresh',
+            icon: Icons.sync_rounded,
+            compact: true,
+            busy: vm.isLoading,
+            onPressed: vm.isRunning || vm.isLoading ? null : vm.load,
+          ),
+        ],
+      );
+}
+
+/// The stepper, and whatever the finished run has to say.
+class _RunCard extends StatelessWidget {
+  const _RunCard({required this.vm});
+
+  final LiveContainerViewModel vm;
+
+  @override
+  Widget build(BuildContext context) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          AppCard(
+            child: SideloadStepper(
+              steps: LiveContainerViewModel.schedule.steps,
+              activeIndex: vm.progress.activeIndex,
+              stepText: vm.progress.stepText,
+              percent: vm.progress.percent,
+              isIndeterminate: vm.progress.isIndeterminate,
+              isComplete: vm.isSucceeded,
+              hasError: vm.isFailed,
+            ),
+          ),
+          if (vm.isFailed) ...<Widget>[
+            const SizedBox(height: Space.s4),
+            Alert(
+              kind: AlertKind.danger,
+              title: "LiveContainer wasn't set up",
+              message: vm.failureMessage!,
+            ),
+          ],
+          if (vm.isSucceeded) ...<Widget>[
+            const SizedBox(height: Space.s4),
+            // Installed is not the same as finished here: the certificate import
+            // happens inside LiveContainer, on its next launch. Saying "done"
+            // without saying that would leave JIT-less mode quietly unavailable.
+            Alert(
+              kind: vm.manualInstructions != null
+                  ? AlertKind.warning
+                  : AlertKind.success,
+              title: 'Installed LiveContainer${_version(vm)}',
+              message: vm.manualInstructions ??
+                  'Open it on your iPhone once to finish. It imports the signing '
+                      'certificate itself, then it can sign apps on device.',
+            ),
+          ],
+        ],
+      );
+
+  static String _version(LiveContainerViewModel vm) {
+    final String? version = vm.result?.version;
+    return version == null || version.isEmpty ? '' : ' $version';
+  }
+}
+
+/// Why this exists, in the terms someone hitting the three-app wall would ask it.
+class _ExplainerCard extends StatelessWidget {
+  const _ExplainerCard();
+
+  @override
+  Widget build(BuildContext context) => AppCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const SectionLabel('How it helps'),
+            const SizedBox(height: Space.s3),
+            _Point(
+              icon: Icons.layers_outlined,
+              title: 'Past the three-app limit',
+              body: 'Your iPhone allows three apps signed by a free Apple ID at '
+                  'once. Apps run inside LiveContainer are not installed '
+                  'separately, so they do not use a slot.',
+            ),
+            const SizedBox(height: Space.s4),
+            _Point(
+              icon: Icons.verified_user_outlined,
+              title: 'It signs on device',
+              body: 'iPASide hands LiveContainer the same certificate it signs '
+                  'with, so LiveContainer can sign the apps you add to it '
+                  'without a PC.',
+            ),
+            const SizedBox(height: Space.s4),
+            _Point(
+              icon: Icons.event_repeat_outlined,
+              title: 'Refreshed like anything else',
+              body: 'LiveContainer is tracked in your Library and re-signed '
+                  'before its seven days are up, certificate included.',
+            ),
+          ],
+        ),
+      );
+}
+
+class _Point extends StatelessWidget {
+  const _Point({required this.icon, required this.title, required this.body});
+
+  final IconData icon;
+  final String title;
+  final String body;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.palette;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Icon(icon, size: Sizes.iconLarge, color: p.accent),
+        const SizedBox(width: Space.s3),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(title, style: context.t.semi(FontSizes.body)),
+              const SizedBox(height: Space.s1),
+              Text(body, style: context.t.bodyMuted),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
