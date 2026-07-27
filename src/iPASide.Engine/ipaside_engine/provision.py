@@ -178,14 +178,54 @@ def _ensure_app_id(team_id: str, bundle_id: str, name: str) -> dict[str, Any]:
         raise
 
 
+def _ensure_app_groups(
+    team_id: str,
+    app_id: dict[str, Any],
+    app_id_id: str,
+    identifiers: list[str],
+    name: str,
+) -> list[str]:
+    """Attach app groups to an App ID so the profile grants them; return their ids.
+
+    Two steps in a specific order, both required: the app-groups capability has to be
+    enabled on the App ID before a group can be assigned to it, and the profile has to
+    be downloaded afterwards to pick the assignment up. Free accounts are allowed all
+    of this - verified against one.
+    """
+    if not app_id.get("features", {}).get(developer.FEATURE_APP_GROUPS):
+        developer.enable_app_id_feature(team_id, app_id_id, developer.FEATURE_APP_GROUPS)
+
+    existing = {
+        group.get("identifier"): group for group in developer.list_application_groups(team_id)
+    }
+    group_ids: list[str] = []
+    for identifier in identifiers:
+        group = existing.get(identifier)
+        if group is None:
+            group = developer.add_application_group(team_id, identifier, name)
+        internal_id = group.get("applicationGroup")
+        if not internal_id:
+            raise gsa.GsaError(f"app group {identifier} has no id to assign")
+        group_ids.append(internal_id)
+
+    developer.assign_application_groups(team_id, app_id_id, group_ids)
+    return group_ids
+
+
 def ensure_signing_assets(
     bundle_id: str,
     udid: str,
     app_name: str = "iPASide App",
     device_name: str = "iPASide device",
     on_step: Callable[[str], None] | None = None,
+    app_groups: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Provision cert + device + App ID + profile and cache a signing bundle."""
+    """Provision cert + device + App ID + profile and cache a signing bundle.
+
+    ``app_groups`` names ``group.…`` identifiers to attach to the App ID. Ordinary
+    sideloads do not need any; LiveContainer does, because a shared container is how
+    it reaches the certificate it signs guest apps with.
+    """
     step = on_step or (lambda _m: None)
     step("Contacting Apple\u2026")
     session = gsa.load_session()  # raises if not signed in
@@ -203,9 +243,14 @@ def ensure_signing_assets(
     _ensure_device(team_id, udid, device_name)
     step("Creating the App ID\u2026")
     app_id = _ensure_app_id(team_id, bundle_id, app_name)
-    step("Fetching the provisioning profile\u2026")
     app_id_id = app_id.get("appIdId") or app_id.get("appIdPlatform") or app_id.get("identifier")
 
+    group_ids: list[str] = []
+    if app_groups:
+        step("Attaching app groups\u2026")
+        group_ids = _ensure_app_groups(team_id, app_id, app_id_id, app_groups, app_name)
+
+    step("Fetching the provisioning profile\u2026")
     profile = developer.download_profile(team_id, app_id_id)
     profile_data = profile.get("encodedProfile")
     if not isinstance(profile_data, (bytes, bytearray)):
@@ -228,6 +273,8 @@ def ensure_signing_assets(
         "p12_path": str(p12_path),
         "p12_password": signing.P12_PASSWORD,
         "profile_path": str(profile_path),
+        "app_groups": app_groups or [],
+        "app_group_ids": group_ids,
     }
     (signing_dir / _BUNDLE_CACHE).write_text(json.dumps(bundle, indent=2), encoding="utf-8")
     return bundle

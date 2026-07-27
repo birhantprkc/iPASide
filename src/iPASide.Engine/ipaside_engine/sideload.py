@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import plistlib
 import shutil
 import stat
 import tempfile
@@ -127,6 +128,34 @@ def resolve_udid(udid: str | None) -> str:
         raise SideloadError(str(exc)) from exc
 
 
+def _signing_profile(
+    name: str, team_id: str, bundle_id: str
+) -> tuple[list[str], dict[str, Any], list[str]]:
+    """Return ``(app groups, entitlements, dylibs)`` for a named signing profile.
+
+    A handful of apps need more than their provisioning profile spells out: app groups
+    attached to the App ID, an explicit entitlements plist at sign time, and a dylib of
+    ours injected. Rather than let callers pass those in as data, they ask for a profile
+    *by name* and it is generated here from the team and bundle id.
+
+    That indirection is what makes auto-refresh correct. The record stores only the name,
+    so a re-sign months later regenerates whatever the app requires *today* and finds our
+    dylib wherever this build keeps it. Recording the generated values instead would pin
+    each record to the requirements - and the install path - that happened to be true on
+    the day it was first installed.
+    """
+    if name == "livecontainer":
+        from . import livecontainer  # imported here: livecontainer builds on this module
+
+        helper = signing.resolve_helper_dylib()
+        return (
+            livecontainer.app_group_identifiers(team_id),
+            livecontainer.build_entitlements(team_id, bundle_id),
+            [helper] if helper else [],
+        )
+    raise SideloadError(f"Unknown signing profile '{name}'.")
+
+
 def _as_signed_dir(directory: str | None) -> Path:
     """The folder signed IPAs live in: the caller's choice, or the app's own.
 
@@ -176,6 +205,7 @@ def run_sideload(
     signed_dir: str | None = None,
     record: bool = True,
     allow_other_platform: bool = False,
+    profile: str | None = None,
     on_progress: ProgressFn | None = None,
 ) -> dict[str, Any]:
     """Provision + sign + install an IPA, then record it for auto-refresh.
@@ -183,6 +213,10 @@ def run_sideload(
     ``keep_signed`` leaves the signed ``<source>_Signed.ipa`` on disk and reports it
     as ``signed_ipa``; otherwise it is deleted once the install is over.
     ``signed_dir`` overrides where that file - and the sign-time scratch - is written.
+
+    ``profile`` names a signing profile that contributes app groups and an explicit
+    entitlements plist - see :func:`_signing_profile`. Ordinary sideloads leave it unset
+    and get exactly what their provisioning profile grants.
     """
     progress: ProgressFn = on_progress or (lambda *_args: None)
     udid = resolve_udid(udid)
@@ -213,16 +247,39 @@ def run_sideload(
     # A free account can't register a real App Store id, so default to a
     # team-scoped id; honor an explicit override when given.
     target_bundle_id = bundle_id or provision.team_scoped_bundle_id(info.get("bundle_id"))
+
+    app_groups: list[str] = []
+    entitlements: dict[str, Any] | None = None
+    profile_dylibs: list[str] = []
+    if profile:
+        # Keyed by team, and the app groups have to exist before the profile is
+        # downloaded, so this resolves before provisioning rather than before signing.
+        app_groups, entitlements, profile_dylibs = _signing_profile(
+            profile, developer.list_teams()[0]["teamId"], target_bundle_id
+        )
+
     bundle = provision.ensure_signing_assets(
         target_bundle_id, udid, app_name=app_name,
         on_step=lambda message: progress("provision", None, message),
+        app_groups=app_groups,
     )
 
     progress("sign", None, "Signing the app\u2026")
-    resolved_dylibs = _resolve_dylibs(dylibs)  # unpack any .deb tweaks to their dylibs
+    # The user's tweaks, unpacked from any .deb, plus whatever the signing profile
+    # contributes. Only the former is recorded: see _signing_profile.
+    resolved_dylibs = _resolve_dylibs(dylibs) + profile_dylibs
     target_dir, scratch = _open_signed_dir(signed_dir)
     output = str(target_dir / f"{Path(ipa_path).stem}{SIGNED_SUFFIX}")
     try:
+        entitlements_path: str | None = None
+        if entitlements is not None:
+            # Into the scratch directory, which is removed in the `finally` below: this
+            # plist is derived from the profile and is regenerated on every run, so there
+            # is nothing to gain from keeping it beyond the sign.
+            written = scratch / "entitlements.plist"
+            written.write_bytes(plistlib.dumps(entitlements))
+            entitlements_path = str(written)
+
         signing.sign_ipa(
             ipa_path, output,
             p12_path=bundle["p12_path"],
@@ -237,6 +294,7 @@ def run_sideload(
             dylibs=resolved_dylibs,
             weak_dylibs=weak_dylibs,
             inject_into_extensions=inject_into_extensions,
+            entitlements=entitlements_path,
             temp_folder=str(scratch),
         )
 
@@ -293,6 +351,8 @@ def run_sideload(
                 "remove_extensions": remove_extensions,
                 "remove_uisd": remove_uisd,
                 "enable_file_sharing": enable_file_sharing,
+                # By name, not as the generated entitlements - see _signing_profile.
+                "profile": profile,
             },
         })
     return result
@@ -451,6 +511,7 @@ def refresh_record(
             enable_file_sharing=bool(options.get("enable_file_sharing")),
             keep_signed=keep_signed,
             signed_dir=signed_dir,
+            profile=options.get("profile"),
             on_progress=on_progress,
         )
 

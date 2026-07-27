@@ -157,6 +157,64 @@ def delete_app_id(team_id: str, app_id_id: str) -> None:
     _request("ios/deleteAppId.action", {"appIdId": app_id_id}, team_id=team_id)
 
 
+def enable_app_id_feature(
+    team_id: str, app_id_id: str, feature: str, enabled: bool = True
+) -> dict[str, Any]:
+    """Turn one App ID capability on or off.
+
+    Features are identified by opaque Apple codes rather than names - see
+    :data:`FEATURE_APP_GROUPS`. An entitlement only becomes signable once its
+    capability is enabled here *and*, for app groups, the group is assigned.
+    """
+    result = _request(
+        "ios/updateAppId.action",
+        {"appIdId": app_id_id, feature: enabled},
+        team_id=team_id,
+    )
+    return result.get("appId", {})
+
+
+# --------------------------------------------------------------------------- #
+# Application groups
+#
+# Free accounts can list, create and assign these, which is what makes it
+# possible to sign apps that talk to each other through a shared container -
+# LiveContainer being the one that matters here. Verified against a free account.
+# --------------------------------------------------------------------------- #
+
+#: App ID capability code for app groups, needed before a group can be assigned.
+FEATURE_APP_GROUPS = "APG3427HIY"
+
+
+def list_application_groups(team_id: str) -> list[dict[str, Any]]:
+    """Return the team's app groups, each with an ``applicationGroup`` id."""
+    result = _request("ios/listApplicationGroups.action", team_id=team_id)
+    return result.get("applicationGroupList", [])
+
+
+def add_application_group(team_id: str, identifier: str, name: str) -> dict[str, Any]:
+    """Register an app group (``group.…`` identifier) and return it."""
+    result = _request(
+        "ios/addApplicationGroup.action",
+        {"identifier": identifier, "name": _sanitize_name(name)},
+        team_id=team_id,
+    )
+    return result.get("applicationGroup", {})
+
+
+def assign_application_groups(team_id: str, app_id_id: str, group_ids: list[str]) -> None:
+    """Attach app groups to an App ID, so its profile grants them.
+
+    ``group_ids`` are the internal ``applicationGroup`` ids from
+    :func:`list_application_groups`, not the ``group.…`` identifiers.
+    """
+    _request(
+        "ios/assignApplicationGroupToAppId.action",
+        {"appIdId": app_id_id, "applicationGroups": group_ids},
+        team_id=team_id,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Provisioning profiles
 # --------------------------------------------------------------------------- #

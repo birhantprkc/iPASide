@@ -52,8 +52,36 @@ def test_sign_ipa_minimal_has_no_optional_flags(monkeypatch):
         remove_extensions=False, remove_watch=False, remove_uisd=False,
     )
     cmd = captured["cmd"]
-    for flag in ("-b", "-n", "-r", "-l", "-w", "-P", "-S", "-E", "-W", "-U", "-t"):
+    for flag in ("-b", "-n", "-r", "-l", "-w", "-P", "-S", "-E", "-W", "-U", "-t", "-e"):
         assert flag not in cmd
+
+
+def test_sign_ipa_passes_explicit_entitlements(monkeypatch):
+    # -e replaces the profile's entitlements wholesale, which is how LiveContainer gets
+    # its 128 expanded keychain groups instead of the profile's bare wildcard.
+    captured = _capture_cmd(monkeypatch)
+    signing.sign_ipa(
+        "in.ipa", "out.ipa",
+        p12_path="id.p12", p12_password="pw", profile_path="p.mobileprovision",
+        entitlements=r"C:\scratch\entitlements.plist",
+    )
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("-e") + 1] == r"C:\scratch\entitlements.plist"
+
+
+def test_resolve_helper_dylib_honours_the_env_override(monkeypatch, tmp_path):
+    dylib = tmp_path / "iPASideCertImport.dylib"
+    dylib.write_bytes(b"\xcf\xfa\xed\xfe")
+    monkeypatch.setenv("IPASIDE_CERT_IMPORT_DYLIB", str(dylib))
+    assert signing.resolve_helper_dylib() == str(dylib)
+
+
+def test_resolve_helper_dylib_is_none_when_not_shipped(monkeypatch, tmp_path):
+    """A build without the dylib falls back to a manual import rather than failing."""
+    monkeypatch.delenv("IPASIDE_CERT_IMPORT_DYLIB", raising=False)
+    monkeypatch.setattr(signing.paths, "resource_dir", lambda: tmp_path)
+    monkeypatch.setattr(signing.sys, "executable", str(tmp_path / "python.exe"))
+    assert signing.resolve_helper_dylib() is None
 
 
 def test_sign_ipa_passes_the_temp_folder_to_zsign(monkeypatch):

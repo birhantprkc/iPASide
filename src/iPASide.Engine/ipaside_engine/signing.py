@@ -79,6 +79,31 @@ def resolve_zsign() -> str:
     raise SigningError("zsign not found (set IPASIDE_ZSIGN or bundle vendor/zsign.exe)")
 
 
+#: Injected into LiveContainer so it can import our signing certificate itself.
+HELPER_DYLIB = "iPASideCertImport.dylib"
+
+
+def resolve_helper_dylib() -> str | None:
+    """Locate the bundled certificate-import dylib, or None if it is not shipped.
+
+    This is an iOS arm64 Mach-O, so it is built on macOS in CI and committed rather
+    than compiled during packaging (see tools/lc-cert-import/). Callers treat a
+    missing dylib as "fall back to a manual import" rather than an error, so a build
+    that omits it still installs LiveContainer successfully.
+    """
+    override = os.environ.get("IPASIDE_CERT_IMPORT_DYLIB")
+    if override and Path(override).exists():
+        return override
+    candidates = [
+        paths.resource_dir() / "vendor" / HELPER_DYLIB,
+        Path(sys.executable).parent / HELPER_DYLIB,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
 def sign_ipa(
     input_ipa: str,
     output_ipa: str,
@@ -96,6 +121,7 @@ def sign_ipa(
     dylibs: list[str] | None = None,
     weak_dylibs: bool = False,
     inject_into_extensions: bool = False,
+    entitlements: str | None = None,
     zip_level: int = 6,
     temp_folder: str | None = None,
 ) -> dict[str, Any]:
@@ -104,6 +130,12 @@ def sign_ipa(
     Options map to zsign flags and cover the "advanced" sideload knobs: bundle
     id/name/version overrides, tweak (dylib) injection (optionally weak / into
     extensions), file-sharing enablement, and the free-account strip flags.
+
+    ``entitlements`` replaces the profile's entitlements with an explicit plist.
+    Normally the profile's are exactly right and this should be left alone; it exists
+    for apps that need entries a profile does not spell out, such as LiveContainer's
+    128 expanded keychain groups. Every entitlement in the file must be covered by the
+    profile, or the signature is rejected outright rather than partly granted.
 
     ``temp_folder`` is where zsign unpacks the IPA and assembles the signed copy -
     by far the heaviest I/O of a sideload, since the whole app is written out and
@@ -135,6 +167,8 @@ def sign_ipa(
         cmd.append("-U")
     if enable_file_sharing:
         cmd.append("-S")
+    if entitlements:
+        cmd += ["-e", entitlements]
     for dylib in dylibs or []:
         cmd += ["-l", dylib]
     if dylibs and weak_dylibs:

@@ -28,6 +28,7 @@ from . import (
     doctor,
     gsa,
     ipa,
+    livecontainer,
     lockdown,
     provision,
     refresh,
@@ -409,6 +410,66 @@ def _cmd_sideload(args: argparse.Namespace) -> int:
     else:
         print(f"Sideloaded {result['name']} ({result['bundle_id']}). "
               "Trust the developer on your device to launch it.")
+    return 0
+
+
+def _cmd_livecontainer(args: argparse.Namespace) -> int:
+    """Report on LiveContainer, download it, or set it up end to end."""
+    if args.download and not args.setup:
+        result = livecontainer.download(args.dir, on_progress=_progress_to_stderr())
+        if args.json:
+            _emit(args, result)
+        else:
+            print(f"Downloaded LiveContainer {result['version']} to {result['path']}")
+        return 0
+
+    if args.setup:
+        ipa_path = args.ipa
+        if not ipa_path:
+            ipa_path = livecontainer.download(
+                args.dir, on_progress=_progress_to_stderr()
+            )["path"]
+        result = livecontainer.setup(
+            ipa_path,
+            args.udid,
+            keep_signed=args.keep_signed,
+            signed_dir=args.signed_dir,
+            automatic_certificate=not args.manual_certificate,
+            on_progress=_progress_to_stderr(),
+        )
+        if args.json:
+            _emit(args, result)
+            return 0
+
+        certificate = result["certificate"]
+        print(f"Installed LiveContainer ({result['bundle_id']}).")
+        if certificate.get("automatic"):
+            print(
+                "Open it once and it will import the signing certificate itself, "
+                "then JIT-less mode is ready."
+            )
+        elif certificate.get("seeded"):
+            print(certificate["instructions"])
+        else:
+            print(f"The certificate could not be delivered: {certificate.get('error')}")
+            print(certificate["instructions"])
+        return 0
+
+    result = livecontainer.status(args.udid)
+    if args.json:
+        _emit(args, result)
+        return 0
+
+    if not result["installed"]:
+        print("LiveContainer is not installed. Run with --setup to install it.")
+        return 0
+    print(f"LiveContainer {result.get('version') or ''} ({result['bundle_id']})")
+    if result.get("certificate_pending"):
+        print("  A certificate import is waiting; open LiveContainer to complete it.")
+    elif not result.get("launched"):
+        print("  Installed but never opened.")
+    else:
+        print("  Set up. Its certificate is stored in the shared app group.")
     return 0
 
 
@@ -853,6 +914,7 @@ _HANDLERS = {
     "provision": _cmd_provision,
     "sign": _cmd_sign,
     "sideload": _cmd_sideload,
+    "livecontainer": _cmd_livecontainer,
     "installs": _cmd_installs,
     "refresh": _cmd_refresh,
     "signed": _cmd_signed,
@@ -1062,6 +1124,30 @@ def build_parser() -> argparse.ArgumentParser:
     sideload_parser.add_argument(
         "--remove-device-restrictions", action=argparse.BooleanOptionalAction, default=True,
         help="remove UISupportedDevices",
+    )
+
+    lc_parser = sub.add_parser(
+        "livecontainer", parents=[common, target, signed_output],
+        help="install LiveContainer and hand it the signing certificate",
+    )
+    lc_parser.add_argument(
+        "--setup", action="store_true",
+        help="sign + install LiveContainer, then give it the certificate",
+    )
+    lc_parser.add_argument(
+        "--download", action="store_true", help="download the latest LiveContainer IPA"
+    )
+    lc_parser.add_argument(
+        "--ipa", default=None,
+        help="LiveContainer .ipa to use (default: download the latest release)",
+    )
+    lc_parser.add_argument(
+        "--dir", default=None,
+        help="folder for the downloaded IPA (default: the app's downloads folder)",
+    )
+    lc_parser.add_argument(
+        "--manual-certificate", action="store_true",
+        help="leave the .p12 for LiveContainer's own Settings instead of importing it",
     )
 
     sub.add_parser("installs", parents=[common], help="list apps iPASide has sideloaded (with expiry)")
