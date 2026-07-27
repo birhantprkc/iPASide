@@ -2,11 +2,11 @@
 ; portable Python engine.
 ;
 ; Build (from repo root, after building the app + assembling the engine):
-;   ISCC /DAppVersion=1.0.0 packaging\iPASide.iss
+;   ISCC /DAppVersion=1.0.1 packaging\iPASide.iss
 ; Output: dist\installer\iPASide-Setup-<ver>-x64.exe
 
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.0.1"
 #endif
 #define AppName "iPASide"
 #define AppPublisher "iPASide Contributors"

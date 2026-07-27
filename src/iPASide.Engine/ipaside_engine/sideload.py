@@ -95,18 +95,22 @@ def _humanize_install(status: str | None) -> str:
     return _INSTALL_STEPS.get(status, status)
 
 
-def _install_relay(update: dict[str, Any]) -> tuple[int, str]:
+def _install_relay(update: dict[str, Any], target_name: str = "iPhone") -> tuple[int, str]:
     """Map an ``apps.install`` progress update to ``(overall_percent, step_label)``.
 
     One monotonic 0-100 bar for the whole install: the upload (the long haul) drives 0-80%,
     installd's on-device phases drive 80-100%, each with a live sub-step label.
+
+    ``target_name`` is what the upload is going to, named rather than assumed: "Uploading
+    to iPhone" is wrong the moment somebody points this at an Apple TV, and it is also
+    less use than the device's own name when two are attached.
     """
     if update.get("phase") == "upload":
         overall = round((update.get("percent") or 0) * 0.8)
         total, sent = update.get("total") or 0, update.get("sent") or 0
         step = (
-            f"Uploading to iPhone \u00b7 {sent // (1 << 20)} / {total // (1 << 20)} MB"
-            if total else "Uploading to iPhone\u2026"
+            f"Uploading to {target_name} \u00b7 {sent // (1 << 20)} / {total // (1 << 20)} MB"
+            if total else f"Uploading to {target_name}\u2026"
         )
         return overall, step
     status = update.get("status")
@@ -171,6 +175,7 @@ def run_sideload(
     keep_signed: bool = False,
     signed_dir: str | None = None,
     record: bool = True,
+    allow_other_platform: bool = False,
     on_progress: ProgressFn | None = None,
 ) -> dict[str, Any]:
     """Provision + sign + install an IPA, then record it for auto-refresh.
@@ -189,18 +194,19 @@ def run_sideload(
             "use a decrypted IPA."
         )
 
-    # A tvOS or watchOS .ipa is indistinguishable from an iOS one until you read the
-    # Info.plist: same zip, same Payload/<App>.app. Provisioning one as iOS succeeds
-    # right through to the upload, and the device rejects it at the last moment with
-    # nothing that points at the real reason. Say it here instead.
-    platform = info.get("platform")
-    if platform and platform != "ios":
-        label = ipa_module.PLATFORM_LABELS.get(platform, f"{platform} devices")
-        raise SideloadError(
-            f"{Path(ipa_path).name} is built for {label}, and iPASide installs to "
-            "iPhone and iPad only. Signing it as an iOS app would provision it "
-            "successfully and then be refused by the device."
-        )
+    # What matters is not the .ipa's platform on its own, but whether it matches the
+    # thing being installed to. An .ipa built for tvOS is indistinguishable from an iOS
+    # one from the outside - same zip, same Payload/<App>.app - so sent to an iPhone it
+    # installs and never launches, and an iOS .ipa sent to an Apple TV does the same.
+    #
+    # Provisioning is NOT the obstacle it looks like: Apple registers an Apple TV and
+    # issues its profile through the same `ios/` endpoints used for a phone, which is why
+    # the platform hints on those calls are ignored. The profile is scoped by the device
+    # UDIDs in it, not by a platform.
+    device_class, target_name = _describe_target(udid)
+    if not allow_other_platform:
+        _check_platform_matches_device(ipa_path, info, device_class)
+
     app_name = display_name or info.get("display_name") or info.get("bundle_id")
 
     progress("provision", None, "Contacting Apple\u2026")
@@ -234,8 +240,12 @@ def run_sideload(
             temp_folder=str(scratch),
         )
 
-        progress("install", 0, "Uploading to iPhone\u2026")
-        apps.install(output, udid, progress=lambda u: progress("install", *_install_relay(u)))
+        progress("install", 0, f"Uploading to {target_name}\u2026")
+        apps.install(
+            output,
+            udid,
+            progress=lambda u: progress("install", *_install_relay(u, target_name)),
+        )
     finally:
         # Scratch always goes, kept signed IPA or not: it is an unpacked copy of the
         # whole app, worth hundreds of MB, and nothing reads it after signing.
@@ -286,6 +296,72 @@ def run_sideload(
             },
         })
     return result
+
+
+# What lockdown's DeviceClass means in terms of the platform an app is built for.
+_DEVICE_CLASS_PLATFORM = {
+    "iphone": "ios",
+    "ipad": "ios",
+    "ipod": "ios",
+    "appletv": "tvos",
+    "realitydevice": "visionos",
+    "watch": "watchos",
+}
+
+# How to name the target when the two do not agree.
+_DEVICE_LABELS = {
+    "ios": "an iPhone or iPad",
+    "tvos": "an Apple TV",
+    "watchos": "an Apple Watch",
+    "visionos": "an Apple Vision Pro",
+}
+
+
+def _describe_target(udid: str) -> tuple[str, str]:
+    """``(device_class, name)`` for the target, both lowercased/blank if unreachable.
+
+    Read once: the platform check and every "Uploading to ..." label want the same
+    answer, and an unreachable device is the install's problem to report, not this
+    function's - so a failure here degrades to the old wording rather than raising.
+    """
+    try:
+        values = device.get_device_info(udid)
+    except Exception:  # noqa: BLE001
+        return "", "iPhone"
+    device_class = str(values.get("DeviceClass") or "").strip().lower()
+    name = str(values.get("DeviceName") or "").strip()
+    if not name:
+        name = _DEVICE_LABELS.get(_DEVICE_CLASS_PLATFORM.get(device_class, ""), "iPhone")
+    return device_class, name
+
+
+def _check_platform_matches_device(
+    ipa_path: str, info: dict[str, Any], device_class: str
+) -> None:
+    """Refuse an app built for a different kind of device than the one selected.
+
+    Only a genuine mismatch is refused. A tvOS ``.ipa`` going to an Apple TV is fine -
+    Apple registers the device and issues its profile through the same ``ios/`` endpoints
+    used for a phone, which is why the platform hints on those calls are ignored: the
+    profile is scoped by the UDIDs in it, not by a platform. Anything we cannot read
+    confidently is allowed through, because "the Info.plist did not say" is not evidence
+    of the wrong platform.
+    """
+    app_platform = info.get("platform")
+    if not app_platform:
+        return
+
+    device_platform = _DEVICE_CLASS_PLATFORM.get(device_class)
+    if not device_platform or device_platform == app_platform:
+        return
+
+    app_label = ipa_module.PLATFORM_LABELS.get(app_platform, f"{app_platform} devices")
+    target = _DEVICE_LABELS.get(device_platform, device_class or "this device")
+    raise SideloadError(
+        f"{Path(ipa_path).name} is built for {app_label}, and the selected device is "
+        f"{target}. It would install and then refuse to launch. Use a build made for "
+        f"{target}, or pass --allow-other-platform to try it anyway."
+    )
 
 
 def _refresh_account(entry: dict[str, Any]) -> str | None:

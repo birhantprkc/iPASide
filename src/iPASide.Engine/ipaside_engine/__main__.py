@@ -384,6 +384,7 @@ def _cmd_sideload(args: argparse.Namespace) -> int:
             args.ipa,
             args.udid,
             bundle_id=args.bundle_id,
+            allow_other_platform=args.allow_other_platform,
             display_name=args.name,
             bundle_version=args.set_version,
             dylibs=args.dylib,
@@ -407,7 +408,7 @@ def _cmd_sideload(args: argparse.Namespace) -> int:
         _emit(args, result)
     else:
         print(f"Sideloaded {result['name']} ({result['bundle_id']}). "
-              "Trust the developer on your iPhone to launch it.")
+              "Trust the developer on your device to launch it.")
     return 0
 
 
@@ -1048,6 +1049,10 @@ def build_parser() -> argparse.ArgumentParser:
     sideload_parser.add_argument("--set-version", default=None, help="override CFBundleShortVersionString")
     sideload_parser.add_argument("--dylib", action="append", default=None, help="inject a dylib/tweak (repeatable)")
     sideload_parser.add_argument("--weak-dylibs", action="store_true", help="inject dylibs as LC_LOAD_WEAK_DYLIB")
+    sideload_parser.add_argument(
+        "--allow-other-platform", action="store_true",
+        help="attempt an .ipa built for tvOS/watchOS anyway (very unlikely to install)",
+    )
     sideload_parser.add_argument("--inject-extensions", action="store_true", help="also inject dylibs into app extensions")
     sideload_parser.add_argument("--enable-file-sharing", action="store_true", help="enable Files app / iTunes file sharing")
     sideload_parser.add_argument(

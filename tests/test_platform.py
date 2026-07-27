@@ -75,9 +75,24 @@ def test_an_ordinary_iphone_ipa_reads_as_ios(tmp_path):
     assert report["platform"] == "ios"
 
 
-# --- and refusing it, before Apple or the device is involved ----------------- #
+# --- and refusing only a genuine mismatch ------------------------------------ #
 
-def test_a_tvos_ipa_is_refused_by_name_and_platform(tmp_path):
+@pytest.fixture
+def device_class(monkeypatch):
+    """Pretends the selected device is of a given lockdown DeviceClass."""
+
+    def _set(value: str, name: str = "Test Device"):
+        monkeypatch.setattr(
+            sideload.device, "get_device_info",
+            lambda *a, **k: {"DeviceClass": value, "DeviceName": name},
+        )
+        monkeypatch.setattr(sideload, "resolve_udid", lambda u: "0000")
+
+    return _set
+
+
+def test_a_tvos_app_going_to_an_iphone_is_refused(tmp_path, device_class):
+    device_class("iPhone")
     path = build_ipa(tmp_path, {**BASE, "CFBundleSupportedPlatforms": ["AppleTVOS"]})
 
     with pytest.raises(sideload.SideloadError) as caught:
@@ -85,26 +100,75 @@ def test_a_tvos_ipa_is_refused_by_name_and_platform(tmp_path):
 
     message = str(caught.value)
     assert "Sample.ipa" in message, "say which file"
-    assert "Apple TV (tvOS)" in message, "and what it is for"
-    assert "iPhone and iPad only" in message, "and what iPASide does"
+    assert "Apple TV (tvOS)" in message, "what it is built for"
+    assert "an iPhone or iPad" in message, "and what was selected"
+    assert "--allow-other-platform" in message
 
 
-def test_a_watchos_ipa_is_refused_too(tmp_path):
-    path = build_ipa(tmp_path, {**BASE, "UIDeviceFamily": [4]})
+def test_an_ios_app_going_to_an_apple_tv_is_refused(tmp_path, device_class):
+    device_class("AppleTV")
+    path = build_ipa(tmp_path, {**BASE, "UIDeviceFamily": [1]})
 
-    with pytest.raises(sideload.SideloadError, match="Apple Watch"):
+    with pytest.raises(sideload.SideloadError, match="an Apple TV"):
         sideload.run_sideload(path, "0000")
 
 
-def test_an_ipa_that_does_not_say_is_allowed_through(tmp_path):
-    """No platform recorded is not evidence of the wrong platform.
+def test_a_tvos_app_going_to_an_apple_tv_is_allowed(tmp_path, device_class):
+    """The case this used to block outright.
 
-    Older and repackaged IPAs omit both keys. Refusing those would block apps that
-    install perfectly well, so the check only fires on a positive statement.
+    Apple registers an Apple TV and issues its profile through the same `ios/` endpoints
+    it uses for a phone - the same ones iPASide already calls - so there is nothing about
+    the provisioning that rules this out. It gets past the platform gate and fails later,
+    on the device it cannot actually reach from a test.
     """
-    path = build_ipa(tmp_path, BASE)
+    device_class("AppleTV")
+    path = build_ipa(tmp_path, {**BASE, "CFBundleSupportedPlatforms": ["AppleTVOS"]})
 
-    # Gets past the platform gate and fails later, on the device it cannot reach.
     with pytest.raises(Exception) as caught:
         sideload.run_sideload(path, "0000")
-    assert "iPhone and iPad only" not in str(caught.value)
+    assert "is built for" not in str(caught.value), (
+        "a tvOS app on an Apple TV is not a mismatch and must not be refused as one"
+    )
+
+
+def test_an_iphone_app_going_to_an_iphone_is_allowed(tmp_path, device_class):
+    device_class("iPhone")
+    path = build_ipa(tmp_path, {**BASE, "UIDeviceFamily": [1]})
+
+    with pytest.raises(Exception) as caught:
+        sideload.run_sideload(path, "0000")
+    assert "is built for" not in str(caught.value)
+
+
+def test_an_unreachable_device_does_not_block_the_install(tmp_path, monkeypatch):
+    """A device we cannot read is the install's problem to report, not the gate's."""
+    monkeypatch.setattr(sideload, "resolve_udid", lambda u: "0000")
+
+    def unreachable(*a, **k):
+        raise RuntimeError("no route to device")
+
+    monkeypatch.setattr(sideload.device, "get_device_info", unreachable)
+    path = build_ipa(tmp_path, {**BASE, "CFBundleSupportedPlatforms": ["AppleTVOS"]})
+
+    with pytest.raises(Exception) as caught:
+        sideload.run_sideload(path, "0000")
+    assert "is built for" not in str(caught.value)
+
+
+def test_an_ipa_that_does_not_say_is_allowed_through(tmp_path, device_class):
+    """No platform recorded is not evidence of the wrong platform."""
+    device_class("iPhone")
+    path = build_ipa(tmp_path, BASE)
+
+    with pytest.raises(Exception) as caught:
+        sideload.run_sideload(path, "0000")
+    assert "is built for" not in str(caught.value)
+
+
+def test_the_mismatch_can_be_overridden(tmp_path, device_class):
+    device_class("iPhone")
+    path = build_ipa(tmp_path, {**BASE, "CFBundleSupportedPlatforms": ["AppleTVOS"]})
+
+    with pytest.raises(Exception) as caught:
+        sideload.run_sideload(path, "0000", allow_other_platform=True)
+    assert "is built for" not in str(caught.value)

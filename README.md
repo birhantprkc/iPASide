@@ -127,11 +127,15 @@ them visible rather than surprising:
   and watch apps will not work. Each would need its own App ID.
 - **Apps bought from the App Store cannot be re-signed.** They are encrypted;
   iPASide tells you when it sees one instead of failing obscurely.
-- **iPhone and iPad only.** A tvOS, watchOS or visionOS `.ipa` is refused by name
-  rather than signed and rejected by the device. Apple TV would need tvOS-scoped
-  provisioning, which is not the same API path, and on Windows only an Apple TV with
-  a USB port is reachable at all - portless models pair over the network in a way
-  that currently works from macOS only.
+- **Apple TV is not blocked, but it is untested.** iPASide refuses only a genuine
+  mismatch - a tvOS `.ipa` sent to an iPhone, or an iOS one sent to an Apple TV - because
+  an app built for the wrong device installs and then never launches. A tvOS `.ipa` going
+  to an Apple TV is allowed through: Apple registers an Apple TV and issues its profile
+  from the same endpoints iPASide already uses for a phone, so signing is not the
+  obstacle. What is untested here, for want of an Apple TV, is reaching one. A model with
+  a USB port should pair over usbmux like any other device; a portless Apple TV needs
+  network pairing over `_remotepairing-manual-pairing._tcp`, which iPASide does not
+  implement. If you have one, please report what happens.
 
 ## How it works
 

@@ -4,6 +4,56 @@ All notable changes to iPASide are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.0.1] - 2026-07-27
+
+Fixes made after 1.0.0 was published, released under a new version so an installed copy
+is actually offered them. 1.0.0's own assets are left alone from here: a published
+release's bytes should not change under the people downloading them, and re-releasing the
+same number meant the updater had no way to notice there was anything to fetch.
+
+### Fixed
+
+- **Reaching the free-account app limit now reads as a sentence.** iOS allows three
+  sideloaded apps per device and refuses the fourth; iPASide surfaced that as a raw
+  `AppInstallError` with a Python `set` of tuples inside it. It now names the three apps
+  occupying the slots, with the team that signed each, and says what to do. Verified on
+  an iPhone 8 Plus.
+- **The three-app limit is per device, not per Apple ID** - tested, because the widely
+  repeated advice says otherwise. The apps iOS counts can belong to different developer
+  teams, and signing in with a second Apple ID and retrying produced the identical
+  refusal listing the same three apps. A second account gets you another ten App ID
+  *registrations*, which is a different ceiling; it does not get you a fourth installed
+  app. The docs said nothing about this while implying otherwise, and now say both.
+- **An app built for the wrong kind of device is caught before signing.** A tvOS `.ipa`
+  is indistinguishable from an iOS one from the outside - same zip, same
+  `Payload/<App>.app` - so sent to an iPhone it installs and never launches. iPASide reads
+  `CFBundleSupportedPlatforms` (falling back to `UIDeviceFamily`), compares it against the
+  selected device's `DeviceClass`, and refuses only a genuine mismatch.
+  `--allow-other-platform` overrides it.
+
+### Added
+
+- **Apple TV is no longer ruled out.** A tvOS `.ipa` going to an Apple TV is allowed
+  through, because provisioning turned out not to be the obstacle: Apple registers an
+  Apple TV and issues its profile from the same `ios/` endpoints iPASide already calls,
+  which is why the `DTDK_Platform`/`subPlatform` hints on those calls are ignored - a
+  profile is scoped by the UDIDs in it, not by a platform. Tested as far as is possible
+  without the hardware, on a real 134 MB tvOS build: the platform is detected correctly,
+  an App ID and profile are issued for it, and zsign signs it in 11 seconds with the
+  Mach-O still declaring tvOS afterwards. Untested is the install itself, and one detail
+  worth knowing - the profile came back listing `iOS, xrOS, visionOS` because this team
+  has only an iPhone registered, so it should include tvOS once an Apple TV is. If you
+  have one with a USB port, please report what happens.
+- Install progress names the device it is uploading to rather than always saying
+  "iPhone", which is both wrong for an Apple TV and less useful than the device's own
+  name when two are attached.
+
+### Changed
+
+- The Home hero mark is drawn from artwork cut at the sizes the UI uses, rather than
+  shrunk from the 512px master by the image decoder, whose scaler left visibly
+  stair-stepped corners.
+
 ## [1.0.0] - 2026-07-26
 
 First release. iPASide signs and installs `.ipa` files onto a physical iPhone or iPad
@@ -238,14 +288,20 @@ verified against Apple's own pinned root.
   will not work. Free accounts cannot provision them.
 - **App Store `.ipa` files are FairPlay-encrypted** and cannot be re-signed. iPASide
   detects this while inspecting and tells you rather than failing obscurely.
-- **iPhone and iPad only.** An `.ipa` built for tvOS, watchOS or visionOS is
-  indistinguishable from an iOS one until its Info.plist is read - same zip, same
-  `Payload/<App>.app` - and signing one as iOS provisions cleanly, uploads, and is
-  refused by the device at the last step. iPASide reads `CFBundleSupportedPlatforms`
-  (falling back to `UIDeviceFamily`) and says which platform the file is for instead.
-  Apple TV support would need the provisioning calls scoped to tvOS rather than the
-  `ios/` paths every one of them currently uses, and from Windows only an Apple TV
-  with a USB port is reachable in the first place.
+- **An app built for the wrong device is caught before signing.** A tvOS `.ipa` is
+  indistinguishable from an iOS one from the outside - same zip, same
+  `Payload/<App>.app` - so sent to an iPhone it installs and never launches. iPASide
+  reads `CFBundleSupportedPlatforms` (falling back to `UIDeviceFamily`), compares it
+  against the selected device's lockdown `DeviceClass`, and refuses only a genuine
+  mismatch. `--allow-other-platform` overrides it.
+- **Apple TV is not ruled out, only untested.** Provisioning is not the obstacle it
+  appears to be: Apple registers an Apple TV and issues its profile through the same
+  `ios/` endpoints iPASide already calls, which is why `DTDK_Platform`/`subPlatform` on
+  those calls are ignored - a profile is scoped by the UDIDs in it, not by a platform.
+  A tvOS `.ipa` going to an Apple TV is therefore allowed through. What is untested is
+  reaching the device: a model with a USB port should pair over usbmux like any other,
+  while a portless Apple TV needs network pairing over
+  `_remotepairing-manual-pairing._tcp`, which is not implemented.
 - **Tested with a free Apple ID, on one phone.** A complete sideload has been verified
   over both USB and Wi-Fi. Paid accounts should work and avoid the limits above, and two
   phones through the device picker is covered by tests rather than by hardware, but a
