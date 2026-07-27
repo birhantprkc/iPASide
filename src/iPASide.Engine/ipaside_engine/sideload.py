@@ -44,7 +44,25 @@ SIGNED_SUFFIX = "_Signed.ipa"
 
 # Sign-time scratch: one throwaway directory per run, created inside the same
 # folder as the signed output so the heavy I/O follows the user's chosen disk.
-SCRATCH_PREFIX = "ipaside_sign_"
+#
+# Kept deliberately short. Windows caps paths at MAX_PATH for the ANSI file APIs zsign
+# uses, and every character spent here is one an app bundle cannot use - see _MAX_PATH.
+SCRATCH_PREFIX = "ips_"
+
+# zsign writes temporary `<binary>.archo.N` files beside every Mach-O it re-signs, so
+# the scratch directory's own path length decides whether an app can be signed at all.
+# A bundle with frameworks nested inside frameworks is deep on its own: a Swift package
+# product names itself twice, once as the `.framework` folder and once as the binary
+# inside it, which is how LiveContainer+SideStore reaches 178 characters before any
+# scratch path is counted. Over the limit zsign dies on an fopen, with both streams
+# empty and a -1 exit, so nothing downstream can explain what went wrong.
+_MAX_PATH = 259
+
+# Everything zsign adds between the scratch directory and that temporary file: its own
+# `zsign_folder_<digits>` subdirectory, two separators, and the `.archo.0` suffix.
+# Measured from a run that failed at 264 characters and one that worked at 248, not
+# guessed - an estimate 14 too high here would refuse apps that sign perfectly well.
+_ZSIGN_HEADROOM = 34
 
 
 class SideloadError(EngineError):
@@ -188,23 +206,61 @@ def _as_signed_dir(directory: str | None) -> Path:
     return Path(directory).expanduser().resolve()
 
 
-def _open_signed_dir(directory: str | None) -> tuple[Path, Path]:
+def _scratch_root(target: Path, deepest: int) -> Path:
+    """Where this run's scratch directory should live, given how deep the IPA is.
+
+    Beside the signed output by preference, so the heavy I/O stays on the disk the user
+    chose. That is a performance preference though, and fitting inside the platform's
+    path limit is correctness - see :data:`_MAX_PATH` - so a bundle deep enough to
+    overflow goes to the system temp directory instead, which is both shorter and where
+    every other program puts its scratch.
+
+    Not a retry-on-failure: the choice is computed up front from the IPA, because zsign
+    reports an overflow as an fopen failure with no message worth showing.
+    """
+    if deepest <= 0:
+        return target  # nothing read from the IPA to size against
+    budget = _MAX_PATH - _ZSIGN_HEADROOM - deepest - len(SCRATCH_PREFIX) - 8
+    if len(str(target)) <= budget:
+        return target
+    return Path(tempfile.gettempdir())
+
+
+def _open_signed_dir(directory: str | None, deepest: int = 0) -> tuple[Path, Path]:
     """Return ``(signed folder, this run's scratch folder)``, creating both.
 
     The folder is user-configurable, so it may be a typo, a disconnected drive, or
     somewhere they cannot write. Creating the scratch directory doubles as the write
     test, and either failure is reported as a ``SideloadError`` naming the path -
     something the UI can act on, rather than an OSError raised mid-sign.
+
+    ``deepest`` is the longest path inside the IPA, which decides where the scratch can
+    go; see :func:`_scratch_root`.
     """
     try:
         target = _as_signed_dir(directory)
         target.mkdir(parents=True, exist_ok=True)
-        return target, Path(tempfile.mkdtemp(prefix=SCRATCH_PREFIX, dir=target))
+        root = _scratch_root(target, deepest)
+        root.mkdir(parents=True, exist_ok=True)
+        scratch = Path(tempfile.mkdtemp(prefix=SCRATCH_PREFIX, dir=root))
     except OSError as exc:
         raise SideloadError(
             f"Cannot use '{directory or exc.filename}' as the folder for signed IPAs: "
             f"{exc.strerror or exc}"
         ) from exc
+
+    # Even the shortest root can be too small for a deep enough bundle on a machine
+    # with a long user name. Say so, rather than letting zsign die on an fopen.
+    if deepest and len(str(scratch)) + _ZSIGN_HEADROOM + deepest > _MAX_PATH:
+        shutil.rmtree(scratch, ignore_errors=True)
+        raise SideloadError(
+            f"This app's files are nested too deeply to sign on this machine: the "
+            f"longest path inside it is {deepest} characters, and the working folder "
+            f"'{scratch.parent}' leaves too little of the {_MAX_PATH}-character "
+            "Windows path limit. Choosing a shorter folder for signed IPAs in Settings "
+            "will fix it."
+        )
+    return target, scratch
 
 
 def run_sideload(
@@ -287,7 +343,7 @@ def run_sideload(
     # The user's tweaks, unpacked from any .deb, plus whatever the signing profile
     # contributes. Only the former is recorded: see _signing_profile.
     resolved_dylibs = _resolve_dylibs(dylibs) + profile_dylibs
-    target_dir, scratch = _open_signed_dir(signed_dir)
+    target_dir, scratch = _open_signed_dir(signed_dir, ipa_module.deepest_entry(ipa_path))
     output = str(target_dir / f"{Path(ipa_path).stem}{SIGNED_SUFFIX}")
     try:
         entitlements_path: str | None = None

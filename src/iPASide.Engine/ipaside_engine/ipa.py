@@ -97,6 +97,25 @@ def missing_ipa_error(ipa_path: str) -> IpaError:
     return IpaError(f"Could not find {name}. It may have been moved, renamed or deleted.")
 
 
+def deepest_entry(ipa_path: str) -> int:
+    """Length of the longest path inside an IPA, relative to its root.
+
+    Signing writes the whole bundle out to a scratch directory, so this plus that
+    directory's own path is what a signer has to fit inside the platform's path limit.
+    Apps built with Swift package dependencies nest frameworks inside frameworks and
+    get surprisingly deep - a package product's name appears twice, once as the
+    ``.framework`` folder and once as the binary inside it.
+
+    A file that cannot be read is 0 rather than an error: the caller is sizing a
+    directory name, and reading the IPA properly is the next thing it will do anyway.
+    """
+    try:
+        with zipfile.ZipFile(ipa_path) as archive:
+            return max((len(name) for name in archive.namelist()), default=0)
+    except (OSError, zipfile.BadZipFile):
+        return 0
+
+
 def _app_relpath(names: list[str], filename: str) -> str:
     """Return the 'Payload/<Name>.app' prefix from a zip's entry list."""
     for name in names:
