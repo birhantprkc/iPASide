@@ -1,5 +1,8 @@
+import 'dart:typed_data';
+
 import '../engine/engine.dart';
 import '../services/file_picker.dart';
+import '../services/icon_cache.dart';
 import '../services/settings_store.dart';
 import '../ui/shell/app_dialogs.dart';
 import '../ui/shell/nav_destination.dart';
@@ -27,12 +30,14 @@ class LiveContainerViewModel extends BaseViewModel {
     required this._devices,
     required this._picker,
     required this._dialogs,
+    required this._icons,
   });
 
   final EngineApi _engine;
   final NavigationState _navigation;
   final FilePickerService _picker;
   final DialogService _dialogs;
+  final IconCache _icons;
 
   /// Read per run, never cached: this model is app-scoped and outlives any visit
   /// to Settings, so a value read in the constructor would go stale the moment the
@@ -59,6 +64,7 @@ class LiveContainerViewModel extends BaseViewModel {
   String? _removingBundleId;
   String? _guestProgress;
   String? _guestNotice;
+  Uint8List? _icon;
 
   /// What the device says, or null before the first look.
   LiveContainerStatus? get status => _status;
@@ -134,6 +140,13 @@ class LiveContainerViewModel extends BaseViewModel {
   /// Whether the pairing file that on-device refresh needs is on the device.
   bool get isPaired => _status?.pairingPresent ?? false;
 
+  /// LiveContainer's own home-screen icon, once the phone has been asked for it.
+  ///
+  /// Read from the device rather than the IPA, so it is the icon actually on the home
+  /// screen - LiveContainer generates its own for guest apps, and a user may have
+  /// changed it. Null until it arrives, which is what the placeholder is for.
+  Uint8List? get icon => _icon;
+
   void dismissGuestNotice() {
     if (_guestNotice == null) return;
     _guestNotice = null;
@@ -167,6 +180,30 @@ class LiveContainerViewModel extends BaseViewModel {
     } finally {
       _isLoading = false;
       notify();
+    }
+
+    // On a second pass, and never fatal: the icon is decoration, so failing to read it
+    // must not turn a working screen into an error one.
+    await _loadIcon();
+  }
+
+  Future<void> _loadIcon() async {
+    final String? bundleId = _status?.bundleId;
+    if (bundleId == null || _icon != null) return;
+
+    try {
+      final Map<String, String> icons = await _engine.appIcons(
+        udid: await _devices.targetUdid(),
+        connection: _devices.connectionArg,
+      );
+      final Uint8List? bytes = _icons.bytesFor(icons[bundleId]);
+      if (bytes != null) {
+        _icon = bytes;
+        notify();
+      }
+    } catch (error) {
+      if (BaseViewModel.isShutdown(error)) return;
+      // Left without an icon, which the card already handles.
     }
   }
 

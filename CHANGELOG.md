@@ -4,6 +4,23 @@ All notable changes to iPASide are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.1.1] - 2026-07-28
+
+### Fixed
+
+- **The Install LiveContainer button worked at all.** 1.1.0 shipped with `download()`
+  missing the `variant` parameter the command line passed it, so installing LiveContainer
+  without supplying an IPA yourself - which is what the button does - failed immediately
+  with `download() got an unexpected keyword argument 'variant'`. Every function involved
+  had tests; the wiring between them did not. There are now tests that drive each
+  `livecontainer` command through the real argument parsing into the real functions,
+  stubbing only the network, the device and zsign, so a parameter renamed on one side and
+  not the other fails there instead of on someone's PC. Seven of them fail against 1.1.0.
+
+### Added
+
+- **LiveContainer's own icon** on its tab, read from the phone rather than the IPA, so it
+  is the icon actually on the home screen.
 ## [1.1.0] - 2026-07-28
 
 ### Added

@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../engine/engine.dart';
 import '../../viewmodels/live_container_view_model.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_icon_image.dart';
 import '../widgets/buttons.dart';
 import '../widgets/motion.dart';
 import '../widgets/progress.dart';
@@ -106,7 +107,18 @@ class _StatusCard extends StatelessWidget {
       footer: _Action(vm: vm),
       child: vm.isLoading && vm.status == null
           ? const LoadingLine(label: 'Checking your iPhone\u2026')
-          : _StatusBody(vm: vm),
+          : Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                // Only once it is on the phone: before that there is no icon to show,
+                // and a placeholder square would just be a hole in the layout.
+                if (vm.isInstalled) ...<Widget>[
+                  AppIconImage(bytes: vm.icon, size: Sizes.appIcon),
+                  const SizedBox(width: Space.s4),
+                ],
+                Expanded(child: _StatusBody(vm: vm)),
+              ],
+            ),
     );
   }
 }

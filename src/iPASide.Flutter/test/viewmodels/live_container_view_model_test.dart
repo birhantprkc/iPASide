@@ -4,6 +4,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ipaside/engine/engine.dart';
 import 'package:ipaside/services/file_picker.dart';
+import 'package:ipaside/services/icon_cache.dart';
 import 'package:ipaside/services/settings_store.dart';
 import 'package:ipaside/ui/shell/app_dialogs.dart';
 import 'package:ipaside/ui/shell/nav_destination.dart';
@@ -223,6 +224,7 @@ LiveContainerViewModel _model(
     devices: devices ?? _noDevice(),
     picker: picker ?? _FakePicker(),
     dialogs: dialogs ?? _FakeDialogs(),
+    icons: IconCache(),
   );
   addTearDown(vm.dispose);
   return vm;
@@ -302,8 +304,14 @@ void main() {
       final LiveContainerViewModel vm = _model(runner);
       await Future.wait<void>(<Future<void>>[vm.load(), vm.load()]);
 
-      // One load is a status read plus a guest-app read; a second would double both.
-      expect(runner.calls.length, 2);
+      // Counting the status read specifically, rather than every call: a load also
+      // fetches the guest apps and the icon, and that mix is not what this is about.
+      expect(
+        runner.calls
+            .where((List<String> c) => c.first == 'livecontainer' && c.length == 1)
+            .length,
+        1,
+      );
     });
   });
 
@@ -572,7 +580,10 @@ void main() {
         'com.example.one',
         'com.example.two',
       ]);
-      expect(runner.calls.last, contains('--apps'));
+      expect(
+        runner.calls.any((List<String> c) => c.contains('--apps')),
+        isTrue,
+      );
     });
 
     test('nothing is asked about when LiveContainer is not installed', () async {

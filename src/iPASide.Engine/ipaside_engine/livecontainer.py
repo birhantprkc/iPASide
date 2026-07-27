@@ -228,11 +228,18 @@ def _pick_asset(
 
 
 def download(
-    directory: str | None = None, *, on_progress: ProgressFn | None = None
+    directory: str | None = None,
+    *,
+    variant: str = VARIANT_SIDESTORE,
+    on_progress: ProgressFn | None = None,
 ) -> dict[str, Any]:
-    """Download the newest LiveContainer IPA and return where it landed."""
+    """Download a LiveContainer IPA and return where it landed.
+
+    ``variant`` chooses the build, and is passed straight to :func:`latest_release`, so a
+    caller cannot end up downloading a different build than it asked about.
+    """
     progress: ProgressFn = on_progress or (lambda *_args: None)
-    release = latest_release()
+    release = latest_release(variant)
 
     target_dir = Path(directory).expanduser().resolve() if directory else _default_dir()
     try:
