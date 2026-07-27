@@ -174,6 +174,24 @@ def _signing_profile(
     raise SideloadError(f"Unknown signing profile '{name}'.")
 
 
+def _profile_pre_sign(
+    name: str, ipa_path: str, bundle: dict[str, Any], scratch: str
+) -> str | None:
+    """Let a named profile rewrite the bundle before it is signed.
+
+    Returns a new IPA path to sign instead of ``ipa_path``, or None to sign it as-is. Runs
+    after provisioning, so the certificate is available, and before signing, so anything
+    added is covered by the signature. The LiveContainer profile uses this to bake
+    iPASide's certificate into a bundled SideStore; a build without SideStore is left
+    untouched and signs as normal.
+    """
+    from . import livecontainer
+
+    if name == livecontainer.SIGNING_PROFILE and livecontainer.has_sidestore(ipa_path):
+        return livecontainer.seed_sidestore_certificate(ipa_path, bundle, scratch)
+    return None
+
+
 def _profile_post_install(name: str, udid: str, ipa_path: str) -> dict[str, Any] | None:
     """Whatever a named signing profile still has to do once the app is on the device.
 
@@ -372,8 +390,18 @@ def run_sideload(
             written.write_bytes(plistlib.dumps(entitlements))
             entitlements_path = str(written)
 
+        # A profile may rewrite the bundle before it is signed - baking a certificate
+        # into a store it carries, say. Whatever it hands back is what gets signed, so
+        # the added files are covered by the code signature; the seeded copy lives in
+        # scratch and goes with it.
+        sign_source = ipa_path
+        if profile:
+            seeded = _profile_pre_sign(profile, ipa_path, bundle, str(scratch))
+            if seeded:
+                sign_source = seeded
+
         signing.sign_ipa(
-            ipa_path, output,
+            sign_source, output,
             p12_path=bundle["p12_path"],
             p12_password=bundle["p12_password"],
             profile_path=bundle["profile_path"],

@@ -57,6 +57,44 @@ def load_bundle() -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def signing_identity() -> tuple[bytes, bytes, str]:
+    """Return ``(private_key_pem, certificate_der, serial)`` for the active account.
+
+    The raw material iPASide signs with, for baking into *another* signer's bundle - see
+    :func:`ipaside_engine.livecontainer.seed_sidestore_certificate`. Read from the same
+    per-account cache the signing bundle uses, so it is the identity that just signed,
+    not a re-issue.
+    """
+    session = gsa.load_session()
+    cache = paths.signing_dir(_account_slug(session.get("email"))) / _CERT_CACHE
+    if not cache.exists():
+        raise gsa.GsaError("no signing certificate cached; run 'provision' first")
+    cached = json.loads(cache.read_text(encoding="utf-8"))
+    return (
+        base64.b64decode(cached["key_pem"]),
+        base64.b64decode(cached["cert_der"]),
+        cached["serial"],
+    )
+
+
+def certificate_machine_id(team_id: str, serial: str) -> str:
+    """The ``machineId`` Apple recorded for a certificate.
+
+    AltStore and SideStore encrypt an imported ``.p12`` with this value as its password -
+    it is the identifier submitted with the CSR, and Apple returns it in the certificate
+    listing. Recovered from there rather than kept locally, so it works for a certificate
+    issued by any earlier build too.
+    """
+    for cert in developer.list_certificates(team_id):
+        if cert.get("serialNumber") == serial:
+            machine_id = cert.get("machineId")
+            if machine_id:
+                return str(machine_id)
+    raise gsa.GsaError(
+        f"could not read the machine id for certificate {serial} from Apple"
+    )
+
+
 def team_scoped_bundle_id(base_bundle_id: str) -> str:
     """Return a bundle id guaranteed registerable on a free account.
 

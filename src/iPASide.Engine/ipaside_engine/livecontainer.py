@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import asyncio
 import plistlib
+import shutil
+import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
@@ -74,6 +76,14 @@ PAIRING_NAME = "ALTPairingFile.mobiledevicepairing"
 
 #: Where usbmux keeps the pairing records this PC has for its devices.
 _LOCKDOWN_DIR = Path(r"C:\ProgramData\Apple\Lockdown")
+
+#: The SideStore bundled inside the +SideStore build, and the files it reads on first
+#: launch to import a signing certificate without the user having to sign in. Named and
+#: placed to AltStore/SideStore's own convention, the same one iLoader's isideload uses.
+SIDESTORE_FRAMEWORK = "SideStoreApp.framework"
+ALT_CERTIFICATE_FILE = "ALTCertificate.p12"
+_ALT_CERTIFICATE_ID_KEY = "ALTCertificateID"
+_ALT_APP_GROUPS_KEY = "ALTAppGroups"
 
 #: Release builds. The SideStore one carries a whole store inside the same bundle id, so
 #: it costs no extra app slot, and its refresh is exposed as an App Intent - meaning a
@@ -136,6 +146,63 @@ def build_entitlements(team_id: str, bundle_id: str) -> dict[str, Any]:
 def is_livecontainer(info: dict[str, Any]) -> bool:
     """Whether an inspected IPA is LiveContainer."""
     return str(info.get("bundle_id") or "").startswith(BUNDLE_PREFIX)
+
+
+def seed_sidestore_certificate(ipa_path: str, bundle: dict[str, Any], dest_dir: str) -> str:
+    """Bake iPASide's certificate into the bundled SideStore, before the IPA is signed.
+
+    SideStore imports a certificate it finds in its own bundle on first launch, which is
+    how a store gets a signing identity without the user typing an Apple ID into it. iLoader
+    does the same; the convention (confirmed against isideload) is, inside
+    ``Frameworks/SideStoreApp.framework``:
+
+    * ``ALTCertificate.p12`` - the identity, encrypted with the certificate's Apple
+      ``machineId`` as its password;
+    * ``Info.plist`` gains ``ALTCertificateID`` (the serial) and ``ALTAppGroups`` (the
+      shared app group).
+
+    Seeding it with *iPASide's own* certificate is the point: SideStore then refreshes
+    under the same identity that installed LiveContainer, so the phone can renew apps on
+    its own and there is no separate Apple ID to sign into - which is also the one way to
+    end up with a second, conflicting LiveContainer.
+
+    Returns the path to a new IPA, written under ``dest_dir``. Must run before signing:
+    the files have to be inside the bundle when zsign builds its code-signature manifest,
+    or iOS rejects the framework for having contents the signature does not cover.
+    """
+    key_pem, cert_der, serial = provision.signing_identity()
+    machine_id = provision.certificate_machine_id(bundle["team_id"], serial)
+    alt_p12 = signing.build_p12(cert_der, key_pem, password=machine_id)
+    group = app_group_identifiers(bundle["team_id"])[0]
+
+    work = Path(tempfile.mkdtemp(prefix="ipaside_ss_", dir=dest_dir))
+    try:
+        with zipfile.ZipFile(ipa_path) as archive:
+            archive.extractall(work)
+
+        app = next((work / "Payload").glob("*.app"))
+        framework = app / "Frameworks" / SIDESTORE_FRAMEWORK
+        if not framework.is_dir():
+            raise LiveContainerError(
+                f"{Path(ipa_path).name} has no {SIDESTORE_FRAMEWORK}, so it is not a "
+                "LiveContainer build with SideStore inside it."
+            )
+
+        (framework / ALT_CERTIFICATE_FILE).write_bytes(alt_p12)
+
+        info_path = framework / "Info.plist"
+        info = plistlib.loads(info_path.read_bytes())
+        info[_ALT_CERTIFICATE_ID_KEY] = serial
+        info[_ALT_APP_GROUPS_KEY] = [group]
+        info_path.write_bytes(plistlib.dumps(info, fmt=plistlib.FMT_BINARY))
+
+        # Stored, not deflated: this goes straight back into zsign, which re-reads and
+        # re-zips it anyway, so spending time compressing here is wasted.
+        seeded = Path(dest_dir) / f"{Path(ipa_path).stem}_ss.ipa"
+        ipa_module._zip_dir(work, str(seeded), 0)
+        return str(seeded)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def has_sidestore(ipa_path: str) -> bool:
