@@ -4,6 +4,15 @@ All notable changes to iPASide are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.1.6] - 2026-08-01
+
+### Fixed
+
+- **Update banner was absurdly tall.** Title, body and buttons were stacked
+  vertically while most of the window width sat empty. It is now one horizontal
+  strip — status on the left, See Changes / Download|Install / Later on the
+  right — the same shape as BitBroom's InfoBar.
+
 ## [1.1.5] - 2026-08-01
 
 ### Added

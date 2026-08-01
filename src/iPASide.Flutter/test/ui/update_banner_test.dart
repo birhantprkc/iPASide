@@ -85,8 +85,8 @@ void main() {
       (tester) async {
     final UpdateViewModel model = await _pumpBanner(tester, _StubUpdateService());
 
-    expect(find.text('Update available'), findsOneWidget);
-    expect(find.text('Version 1.2.0 is available.'), findsOneWidget);
+    expect(find.textContaining('Update available'), findsOneWidget);
+    expect(find.textContaining('version 1.2.0 is available'), findsOneWidget);
     expect(find.text('See Changes'), findsOneWidget);
     expect(find.text('Download 1.2.0'), findsOneWidget);
     expect(find.text('Later'), findsOneWidget);
@@ -129,6 +129,16 @@ void main() {
 
     expect(service.installs, 1);
     expect(model.hasLaunchedInstaller, isTrue);
+    await _finish(model);
+  });
+
+  testWidgets('stays a single horizontal strip', (tester) async {
+    final UpdateViewModel model = await _pumpBanner(tester, _StubUpdateService());
+
+    final Size size = tester.getSize(find.byType(UpdateBanner));
+    expect(size.height, lessThan(56), reason: 'must not stack title/body/buttons');
+    expect(size.width, greaterThan(400));
+
     await _finish(model);
   });
 }
