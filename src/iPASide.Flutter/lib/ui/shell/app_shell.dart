@@ -7,6 +7,7 @@ import '../../viewmodels/drop_router.dart';
 import '../../viewmodels/navigation_state.dart';
 import '../../viewmodels/sideload_view_model.dart';
 import '../../viewmodels/theme_controller.dart';
+import '../../viewmodels/update_view_model.dart';
 import '../theme/app_theme.dart';
 import '../views/account_view.dart';
 import '../views/apps_view.dart';
@@ -17,6 +18,7 @@ import '../views/live_container_view.dart';
 import '../views/settings_view.dart';
 import '../views/sideload_view.dart';
 import '../views/sign_in_view.dart';
+import '../widgets/update_banner.dart';
 import 'drop_veil.dart';
 import 'nav_destination.dart';
 import 'sidebar.dart';
@@ -104,6 +106,7 @@ class _AppShellState extends State<AppShell> {
     final navigation = context.watch<NavigationState>();
     final drop = context.watch<DropRouter>();
     final theme = context.watch<ThemeController>();
+    final updates = context.watch<UpdateViewModel>();
     final platformBrightness = MediaQuery.platformBrightnessOf(context);
 
     return DropTarget(
@@ -125,6 +128,16 @@ class _AppShellState extends State<AppShell> {
                     isDark: theme.isDark(platformBrightness),
                     onToggleTheme: () => theme.toggle(platformBrightness),
                   ),
+                  if (updates.showBanner)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(
+                        Space.s3,
+                        0,
+                        Space.s3,
+                        Space.s2,
+                      ),
+                      child: UpdateBanner(model: updates),
+                    ),
                   Expanded(
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,

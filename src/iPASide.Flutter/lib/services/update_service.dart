@@ -7,15 +7,30 @@ import 'package:flutter/foundation.dart';
 import '../platform/app_paths.dart';
 import 'update_planner.dart';
 
+/// Starts a detached OS process. Returns once the launch has been accepted.
+typedef DetachedLauncher = Future<void> Function(
+  String executable,
+  List<String> arguments,
+);
+
 /// The result of one update check.
 @immutable
 class UpdateCheck {
-  const UpdateCheck(this.outcome, {this.latestVersion, this.pending, this.detail});
+  const UpdateCheck(
+    this.outcome, {
+    this.latestVersion,
+    this.releasePageUrl,
+    this.pending,
+    this.detail,
+  });
 
   final UpdateOutcome outcome;
 
   /// The newest published version, when one was found.
   final String? latestVersion;
+
+  /// That release's GitHub page, when the API returned one.
+  final String? releasePageUrl;
 
   /// The verified installer waiting on disk, when [outcome] is
   /// [UpdateOutcome.readyToInstall].
@@ -48,9 +63,11 @@ class UpdateService {
     this.repo = 'iPASide',
     HttpClient? httpClient,
     void Function(String message)? log,
+    DetachedLauncher? launchDetached,
   })  : _paths = paths ?? AppPaths.instance,
         _http = httpClient ?? HttpClient(),
-        _log = log ?? _defaultLog;
+        _log = log ?? _defaultLog,
+        _launchDetached = launchDetached ?? _defaultLaunchDetached;
 
   final String currentVersion;
   final String owner;
@@ -59,8 +76,20 @@ class UpdateService {
   final AppPaths _paths;
   final HttpClient _http;
   final void Function(String) _log;
+  final DetachedLauncher _launchDetached;
 
   static void _defaultLog(String message) => debugPrint('[update] $message');
+
+  static Future<void> _defaultLaunchDetached(
+    String executable,
+    List<String> arguments,
+  ) async {
+    await Process.start(
+      executable,
+      arguments,
+      mode: ProcessStartMode.detached,
+    );
+  }
 
   Uri get _latestReleaseApi =>
       Uri.https('api.github.com', '/repos/$owner/$repo/releases/latest');
@@ -69,6 +98,40 @@ class UpdateService {
   Uri get releasesPage => Uri.https('github.com', '/$owner/$repo/releases');
 
   String get _stagingDir => '${_paths.root}${Platform.pathSeparator}updates';
+
+  /// Opens [url] (or [releasesPage] when null / unsafe) in the default browser.
+  ///
+  /// Only `http`/`https` targets are accepted from the release payload; anything
+  /// else falls back to the releases index so a compromised API reply cannot
+  /// steer `cmd /c start` at an arbitrary scheme.
+  Future<bool> openReleaseNotes([String? url]) async {
+    final Uri target = resolveReleaseNotesUri(url);
+    try {
+      await _launchDetached(
+        'cmd',
+        <String>['/c', 'start', '', target.toString()],
+      );
+      return true;
+    } on Object catch (error) {
+      _log('failed to open release notes: $error');
+      return false;
+    }
+  }
+
+  /// Picks a browser URL for "See Changes". Visible for tests.
+  @visibleForTesting
+  Uri resolveReleaseNotesUri(String? url) {
+    final String? raw = url?.trim();
+    if (raw != null && raw.isNotEmpty) {
+      final Uri? parsed = Uri.tryParse(raw);
+      if (parsed != null &&
+          parsed.hasScheme &&
+          (parsed.isScheme('https') || parsed.isScheme('http'))) {
+        return parsed;
+      }
+    }
+    return releasesPage;
+  }
 
   /// Compares versions only — no download.
   ///
@@ -94,11 +157,20 @@ class UpdateService {
 
       final release = UpdatePlanner.parseRelease(json, arch: _architecture);
       final latest = AppVersion.tryParse(release.tag);
+      final releasePage = release.htmlUrl ?? releasesPage.toString();
       if (latest == null || latest <= running) {
         _clearStaged();
-        return UpdateCheck(UpdateOutcome.upToDate, latestVersion: latest?.toString());
+        return UpdateCheck(
+          UpdateOutcome.upToDate,
+          latestVersion: latest?.toString(),
+          releasePageUrl: releasePage,
+        );
       }
-      return UpdateCheck(UpdateOutcome.updateAvailable, latestVersion: latest.toString());
+      return UpdateCheck(
+        UpdateOutcome.updateAvailable,
+        latestVersion: latest.toString(),
+        releasePageUrl: releasePage,
+      );
     } on Object catch (error) {
       _log('peek failed: $error');
       return const UpdateCheck(
@@ -129,12 +201,17 @@ class UpdateService {
 
       final release = UpdatePlanner.parseRelease(json, arch: _architecture);
       final latest = AppVersion.tryParse(release.tag);
+      final releasePage = release.htmlUrl ?? releasesPage.toString();
 
       if (latest == null || latest <= running) {
         // A previous run may have staged a build for a release that has since
         // been pulled; drop it so the app cannot keep offering a ghost update.
         _clearStaged();
-        return UpdateCheck(UpdateOutcome.upToDate, latestVersion: latest?.toString());
+        return UpdateCheck(
+          UpdateOutcome.upToDate,
+          latestVersion: latest?.toString(),
+          releasePageUrl: releasePage,
+        );
       }
 
       _log('update available: $latest (running $running)');
@@ -143,6 +220,7 @@ class UpdateService {
         return UpdateCheck(
           UpdateOutcome.noSetupAsset,
           latestVersion: latest.toString(),
+          releasePageUrl: releasePage,
           detail: 'That release has no installer to download.',
         );
       }
@@ -151,6 +229,7 @@ class UpdateService {
         return UpdateCheck(
           UpdateOutcome.noChecksums,
           latestVersion: latest.toString(),
+          releasePageUrl: releasePage,
           detail: 'That release publishes no checksums, so it cannot be verified.',
         );
       }
@@ -171,6 +250,7 @@ class UpdateService {
         return UpdateCheck(
           UpdateOutcome.checksumMismatch,
           latestVersion: latest.toString(),
+          releasePageUrl: releasePage,
           detail: 'The download did not match its published checksum, so it was discarded.',
         );
       }
@@ -182,6 +262,7 @@ class UpdateService {
       return UpdateCheck(
         UpdateOutcome.readyToInstall,
         latestVersion: latest.toString(),
+        releasePageUrl: releasePage,
         pending: PendingUpdate(
           version: latest.toString(),
           setupPath: setupPath,
@@ -197,17 +278,31 @@ class UpdateService {
     }
   }
 
-  /// Runs a staged installer. Inno Setup upgrades in place and restarts the app,
-  /// so the running copy does not have to tear itself down first.
+  /// Flags passed to a staged Inno Setup when applying an in-app update.
+  ///
+  /// `/SILENT` (not `/VERYSILENT`): Inno still shows its own progress window and
+  /// any error dialog, so a mid-install failure is never hidden. `/NORESTART`
+  /// keeps Windows from rebooting. `/CLOSEAPPLICATIONS` / `/RESTARTAPPLICATIONS`
+  /// are belt-and-braces for stray iPASide processes; the running GUI exits
+  /// itself right after launch so `AppMutex` releases and Setup can replace
+  /// binaries. The installer's postinstall `[Run]` entry then opens the new
+  /// build (it must not use `skipifsilent`).
+  static const List<String> silentInstallArgs = <String>[
+    '/SILENT',
+    '/NORESTART',
+    '/CLOSEAPPLICATIONS',
+    '/RESTARTAPPLICATIONS',
+  ];
+
+  /// Starts the staged installer in silent upgrade mode.
+  ///
+  /// The caller must exit the running app immediately after this returns true
+  /// so Setup can replace locked binaries; the installer relaunches iPASide
+  /// when it finishes.
   Future<bool> installStaged(PendingUpdate update) async {
     if (!File(update.setupPath).existsSync()) return false;
     try {
-      await Process.start(
-        update.setupPath,
-        const <String>[],
-        mode: ProcessStartMode.detached,
-        runInShell: true,
-      );
+      await _launchDetached(update.setupPath, silentInstallArgs);
       return true;
     } on Object catch (error) {
       _log('failed to launch the installer: $error');

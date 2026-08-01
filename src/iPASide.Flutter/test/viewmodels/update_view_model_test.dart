@@ -29,9 +29,14 @@ class _StubUpdateService extends UpdateService {
   int peeks = 0;
   int downloads = 0;
   int installs = 0;
+  int releaseNotesOpens = 0;
+  String? lastReleaseNotesUrl;
 
   /// Set to hold a download open for as long as a test needs it in flight.
   Completer<UpdateCheck>? blockDownload;
+
+  /// Set to hold an install open so overlapping Install clicks can be asserted.
+  Completer<bool>? blockInstall;
 
   @override
   Future<UpdateCheck> peekLatest() async {
@@ -40,6 +45,9 @@ class _StubUpdateService extends UpdateService {
     return UpdateCheck(
       outcome,
       latestVersion: failed ? null : '1.2.0',
+      releasePageUrl: failed
+          ? null
+          : 'https://github.com/pwnapplehat/iPASide/releases/tag/v1.2.0',
       detail: failed ? 'no network' : null,
     );
   }
@@ -55,6 +63,8 @@ class _StubUpdateService extends UpdateService {
           const UpdateCheck(
             UpdateOutcome.readyToInstall,
             latestVersion: '1.2.0',
+            releasePageUrl:
+                'https://github.com/pwnapplehat/iPASide/releases/tag/v1.2.0',
             pending: _staged,
           ),
         );
@@ -63,15 +73,23 @@ class _StubUpdateService extends UpdateService {
   @override
   Future<bool> installStaged(PendingUpdate update) async {
     installs++;
-    return installSucceeds;
+    return blockInstall?.future ?? Future<bool>.value(installSucceeds);
+  }
+
+  @override
+  Future<bool> openReleaseNotes([String? url]) async {
+    releaseNotesOpens++;
+    lastReleaseNotesUrl = url;
+    return true;
   }
 }
 
 /// A view model wired to [service], disposed when the running test ends.
-UpdateViewModel _model(_StubUpdateService service, {Duration? interval}) {
+UpdateViewModel _model(_StubUpdateService service, {Duration? interval, Future<void> Function()? exitForUpdate}) {
   final UpdateViewModel model = UpdateViewModel(
     service: service,
     checkInterval: interval ?? UpdateViewModel.checkEvery,
+    exitForUpdate: exitForUpdate,
   );
   addTearDown(model.dispose);
   return model;
@@ -306,6 +324,146 @@ void main() {
         expect(service.installs, 1);
         model.dispose();
       });
+    });
+  });
+
+  group('Shell banner', () {
+    test('an available update shows the banner', () async {
+      final UpdateViewModel model = _model(
+        _StubUpdateService(outcome: UpdateOutcome.updateAvailable),
+      );
+
+      await model.check();
+
+      expect(model.showBanner, isTrue);
+      expect(model.canDownload, isTrue);
+    });
+
+    test('Later hides the banner for that version', () async {
+      final UpdateViewModel model = _model(
+        _StubUpdateService(outcome: UpdateOutcome.updateAvailable),
+      );
+
+      await model.check();
+      model.dismissBanner();
+
+      expect(model.showBanner, isFalse);
+      expect(model.canDownload, isTrue, reason: 'Settings still offers it');
+    });
+
+    test('a finished download brings the banner back for Install', () async {
+      final UpdateViewModel model = _model(
+        _StubUpdateService(outcome: UpdateOutcome.updateAvailable),
+      );
+
+      await model.check();
+      model.dismissBanner();
+      await model.download();
+
+      expect(model.canInstall, isTrue);
+      expect(model.showBanner, isTrue);
+    });
+
+    test('handing off the installer clears the banner', () async {
+      final UpdateViewModel model = _model(
+        _StubUpdateService(outcome: UpdateOutcome.updateAvailable),
+      );
+
+      await model.download();
+      expect(model.showBanner, isTrue);
+
+      await model.install();
+
+      expect(model.hasLaunchedInstaller, isTrue);
+      expect(model.showBanner, isFalse);
+    });
+
+    test('a successful install exits so Setup can replace binaries', () async {
+      var exited = false;
+      final UpdateViewModel model = _model(
+        _StubUpdateService(outcome: UpdateOutcome.updateAvailable),
+        exitForUpdate: () async {
+          exited = true;
+        },
+      );
+
+      await model.download();
+      await model.install();
+
+      expect(model.hasLaunchedInstaller, isTrue);
+      expect(exited, isTrue);
+    });
+
+    test('a failed install does not exit the app', () async {
+      var exited = false;
+      final UpdateViewModel model = _model(
+        _StubUpdateService(outcome: UpdateOutcome.updateAvailable)
+          ..installSucceeds = false,
+        exitForUpdate: () async {
+          exited = true;
+        },
+      );
+
+      await model.download();
+      await model.install();
+
+      expect(model.hasLaunchedInstaller, isFalse);
+      expect(model.isProblem, isTrue);
+      expect(model.canInstall, isTrue, reason: 'retry stays available');
+      expect(exited, isFalse);
+    });
+
+    test('See Changes opens the release page from the last check', () async {
+      final _StubUpdateService service = _StubUpdateService(
+        outcome: UpdateOutcome.updateAvailable,
+      );
+      final UpdateViewModel model = _model(service);
+
+      await model.check();
+      await model.seeChanges();
+
+      expect(service.releaseNotesOpens, 1);
+      expect(
+        service.lastReleaseNotesUrl,
+        'https://github.com/pwnapplehat/iPASide/releases/tag/v1.2.0',
+      );
+    });
+
+    test('a second Install while the first is handing off is ignored', () async {
+      final _StubUpdateService service = _StubUpdateService(
+        outcome: UpdateOutcome.updateAvailable,
+      )..blockInstall = Completer<bool>();
+      final UpdateViewModel model = _model(service);
+
+      await model.download();
+
+      final Future<void> first = model.install();
+      await model.install();
+
+      expect(service.installs, 1, reason: 'busy guard stopped the second click');
+
+      service.blockInstall!.complete(true);
+      await first;
+
+      expect(service.installs, 1);
+      expect(model.hasLaunchedInstaller, isTrue);
+      expect(model.canInstall, isFalse);
+    });
+
+    test('exit failure after a successful launch leaves a clear problem', () async {
+      final UpdateViewModel model = _model(
+        _StubUpdateService(outcome: UpdateOutcome.updateAvailable),
+        exitForUpdate: () async {
+          throw StateError('window destroy failed');
+        },
+      );
+
+      await model.download();
+      await model.install();
+
+      expect(model.hasLaunchedInstaller, isTrue);
+      expect(model.isProblem, isTrue);
+      expect(model.message, contains('could not close itself'));
     });
   });
 }

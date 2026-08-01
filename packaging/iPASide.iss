@@ -6,7 +6,7 @@
 ; Output: dist\installer\iPASide-Setup-<ver>-x64.exe
 
 #ifndef AppVersion
-  #define AppVersion "1.0.1"
+  #define AppVersion "1.1.5"
 #endif
 #define AppName "iPASide"
 #define AppPublisher "iPASide Contributors"
@@ -149,7 +149,9 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopico
 [Run]
 ; Check: never offer to start a payload that just failed to run. After a rolled-back
 ; upgrade the restored older iPASide is fine to launch; a damaged one is not.
-Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent; Check: InstalledAppIsUsable
+; No skipifsilent: the in-app updater installs with /SILENT and the user expects the
+; app to come back afterwards (the update flow closes it so Setup can swap files).
+Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall; Check: InstalledAppIsUsable
 
 [UninstallDelete]
 ; Leftover WebView2 user-data folder from the legacy WPF/WebView2 app.

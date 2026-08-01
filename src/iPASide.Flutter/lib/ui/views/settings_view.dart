@@ -477,6 +477,12 @@ class _UpdateStatus extends StatelessWidget {
                   compact: true,
                   onPressed: vm.download,
                 ),
+              if (vm.canDownload || vm.canInstall)
+                AppButton(
+                  label: 'See Changes',
+                  compact: true,
+                  onPressed: vm.seeChanges,
+                ),
               AppButton(
                 label: 'Check now',
                 compact: true,

@@ -207,7 +207,15 @@ class _IpaSideAppState extends State<IpaSideApp> with WindowListener {
   );
 
   late final UpdateViewModel _updates = UpdateViewModel(
-    service: UpdateService(currentVersion: kAppVersion),
+    service: UpdateService(currentVersion: resolvedAppVersion),
+    // Same tear-down as the window Close button: hide first, then end the
+    // engine, then destroy. The silent installer is already running and waits
+    // on AppMutex until this process exits.
+    exitForUpdate: () => runShutdownSequence(
+      hideWindow: windowManager.hide,
+      disposeEngine: widget.engineClient.dispose,
+      destroyWindow: windowManager.destroy,
+    ),
   );
 
   @override

@@ -5,10 +5,12 @@ import 'package:ipaside/services/update_planner.dart';
 
 String _release({
   String? tag = 'v0.2.0',
+  String? htmlUrl = 'https://github.com/pwnapplehat/iPASide/releases/tag/v0.2.0',
   List<Map<String, String>> assets = const <Map<String, String>>[],
 }) =>
     jsonEncode(<String, Object?>{
       'tag_name': ?tag,
+      'html_url': ?htmlUrl,
       'assets': assets,
     });
 
@@ -60,9 +62,24 @@ void main() {
       );
 
       expect(info.tag, 'v0.2.0');
+      expect(
+        info.htmlUrl,
+        'https://github.com/pwnapplehat/iPASide/releases/tag/v0.2.0',
+      );
       expect(info.setupName, 'iPASide-Setup-0.2.0-x64.exe');
       expect(info.setupUrl, endsWith('iPASide-Setup-0.2.0-x64.exe'));
       expect(info.sumsUrl, endsWith('SHA256SUMS.txt'));
+    });
+
+    test('tolerates a release with no html_url', () {
+      final info = UpdatePlanner.parseRelease(
+        _release(htmlUrl: null, assets: <Map<String, String>>[
+          _asset('iPASide-Setup-0.2.0-x64.exe'),
+        ]),
+      );
+
+      expect(info.htmlUrl, isNull);
+      expect(info.setupName, 'iPASide-Setup-0.2.0-x64.exe');
     });
 
     test('ignores assets that are neither an installer nor the sums', () {

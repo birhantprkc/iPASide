@@ -16,4 +16,13 @@ void main() {
       reason: 'kAppVersion drifted from pubspec.yaml; the updater compares against it',
     );
   });
+
+  test('resolvedAppVersion defaults to kAppVersion', () {
+    expect(
+      Platform.environment.containsKey('IPASIDE_TEST_CURRENT_VERSION'),
+      isFalse,
+      reason: 'the suite must not inherit a fake updater version',
+    );
+    expect(resolvedAppVersion, kAppVersion);
+  });
 }

@@ -10,7 +10,11 @@ import 'base_view_model.dart';
 /// the time anyone opens Settings, and a session left running keeps noticing
 /// releases published after it started.
 class UpdateViewModel extends BaseViewModel {
-  UpdateViewModel({required this._service, this._checkInterval = checkEvery}) {
+  UpdateViewModel({
+    required this._service,
+    this._checkInterval = checkEvery,
+    this._exitForUpdate,
+  }) {
     _timer = Timer.periodic(_checkInterval, _onTick);
   }
 
@@ -38,6 +42,10 @@ class UpdateViewModel extends BaseViewModel {
   final UpdateService _service;
   final Duration _checkInterval;
 
+  /// Tears the GUI down after a successful installer hand-off so Setup can
+  /// replace binaries. Tests leave it null.
+  final Future<void> Function()? _exitForUpdate;
+
   Timer? _timer;
   bool _isBusy = false;
   bool _isDownloading = false;
@@ -46,6 +54,11 @@ class UpdateViewModel extends BaseViewModel {
   DateTime? _lastCheckedAt;
   PendingUpdate? _pending;
   bool _launched = false;
+
+  /// Version the user hid with Later. A different published version shows the
+  /// banner again; [canInstall] also shows it so Install is never buried after
+  /// a dismiss-then-download from Settings.
+  String? _dismissedVersion;
 
   String get currentVersion => _service.currentVersion;
 
@@ -63,13 +76,28 @@ class UpdateViewModel extends BaseViewModel {
   bool get canDownload =>
       !_isBusy && _pending == null && _last?.outcome == UpdateOutcome.updateAvailable;
 
-  bool get canInstall => !_isBusy && _pending != null;
+  bool get canInstall => !_isBusy && !_launched && _pending != null;
 
   /// True once the installer has been handed off, so the card can stop
   /// pretending anything else is actionable.
   bool get hasLaunchedInstaller => _launched;
 
   String? get latestVersion => _last?.latestVersion;
+
+  /// Whether the BitBroom-style shell banner should sit under the title bar.
+  ///
+  /// Shown for a downloadable or installable update (and while a download is
+  /// running). "Later" hides it for that version until Install becomes the
+  /// next step, or a newer version appears.
+  bool get showBanner {
+    if (_launched) return false;
+    if (isDownloading) return true;
+    if (!canDownload && !canInstall) return false;
+    final String? version = latestVersion;
+    if (version == null) return false;
+    if (_dismissedVersion == version && !canInstall) return false;
+    return true;
+  }
 
   /// When a check last reached GitHub, or null before any check has.
   DateTime? get lastCheckedAt => _lastCheckedAt;
@@ -111,8 +139,15 @@ class UpdateViewModel extends BaseViewModel {
   /// One line describing where things stand, or null before the first check.
   String? get message {
     if (_isDownloading) return 'Downloading\u2026';
+    if (_launched) {
+      // Prefer an exit-failure detail over the generic hand-off sentence.
+      if (_last?.outcome == UpdateOutcome.error) {
+        return _last!.detail ??
+            'The installer is running. iPASide will restart when it finishes.';
+      }
+      return 'The installer is running. iPASide will restart when it finishes.';
+    }
     if (_isBusy) return 'Checking for updates\u2026';
-    if (_launched) return 'The installer is running. iPASide will restart when it finishes.';
 
     final result = _last;
     if (result == null) return null;
@@ -168,21 +203,54 @@ class UpdateViewModel extends BaseViewModel {
     notify();
   }
 
-  /// Hands the verified installer to the user's session.
+  /// Hands the verified installer to the user's session, then exits so Setup
+  /// can replace this process's binaries (BitBroom / StepWind hand-off).
   Future<void> install() async {
     final update = _pending;
-    if (update == null || _isBusy) return;
+    if (update == null || _isBusy || _launched) return;
 
-    final started = await _service.installStaged(update);
+    _isBusy = true;
+    notify();
+
+    final bool started = await _service.installStaged(update);
     if (isDisposed) return;
+
     if (started) {
       _launched = true;
-    } else {
-      _last = const UpdateCheck(
-        UpdateOutcome.error,
-        detail: 'The installer could not be started.',
-      );
+      // Stay busy: the process is handing off and must not offer another Install.
+      notify();
+      final Future<void> Function()? exit = _exitForUpdate;
+      if (exit == null) return;
+      try {
+        await exit();
+      } on Object {
+        _last = const UpdateCheck(
+          UpdateOutcome.error,
+          detail:
+              'The installer is running, but iPASide could not close itself. '
+              'Close the app so Setup can finish.',
+        );
+        notify();
+      }
+      return;
     }
+
+    _last = const UpdateCheck(
+      UpdateOutcome.error,
+      detail: 'The installer could not be started.',
+    );
+    _isBusy = false;
+    notify();
+  }
+
+  /// Opens the release notes for the version the banner is offering.
+  Future<void> seeChanges() async {
+    await _service.openReleaseNotes(_last?.releasePageUrl);
+  }
+
+  /// Hides the shell banner for the current version (Settings still offers it).
+  void dismissBanner() {
+    _dismissedVersion = latestVersion;
     notify();
   }
 

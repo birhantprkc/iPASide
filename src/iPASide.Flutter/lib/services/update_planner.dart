@@ -32,9 +32,19 @@ enum UpdateOutcome {
 /// A parsed GitHub "latest release": the tag plus the two assets that matter.
 @immutable
 class ReleaseInfo {
-  const ReleaseInfo({this.tag, this.setupUrl, this.setupName, this.sumsUrl});
+  const ReleaseInfo({
+    this.tag,
+    this.htmlUrl,
+    this.setupUrl,
+    this.setupName,
+    this.sumsUrl,
+  });
 
   final String? tag;
+
+  /// The release's own GitHub page (`html_url`), for a "See Changes" link.
+  final String? htmlUrl;
+
   final String? setupUrl;
   final String? setupName;
   final String? sumsUrl;
@@ -131,6 +141,8 @@ abstract final class UpdatePlanner {
     if (decoded is! Map<String, dynamic>) return const ReleaseInfo();
 
     final tag = decoded['tag_name'] is String ? decoded['tag_name'] as String : null;
+    final htmlUrl =
+        decoded['html_url'] is String ? decoded['html_url'] as String : null;
     final setups = <({String name, String url})>[];
     String? sumsUrl;
 
@@ -154,6 +166,7 @@ abstract final class UpdatePlanner {
     final chosen = _pickSetup(setups, arch);
     return ReleaseInfo(
       tag: tag,
+      htmlUrl: htmlUrl,
       setupUrl: chosen?.url,
       setupName: chosen?.name,
       sumsUrl: sumsUrl,

@@ -4,6 +4,23 @@ All notable changes to iPASide are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.1.5] - 2026-08-01
+
+### Added
+
+- **Update banner under the title bar** (BitBroom-style): when a newer release is
+  available, Download / Install now, See Changes, and Later sit above the rest of
+  the window — the same actions as Settings → Updates, so an update is never
+  buried in Settings alone.
+
+### Changed
+
+- **In-app updates install silently and hand off cleanly.** Install now launches
+  Setup with `/SILENT /NORESTART /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS`, then
+  closes iPASide so AppMutex releases; the installer relaunches the new build when
+  it finishes (the Setup script no longer skips the post-install launch under
+  `/SILENT`).
+
 ## [1.1.4] - 2026-08-01
 
 ### Fixed
