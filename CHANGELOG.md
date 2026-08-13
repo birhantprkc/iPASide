@@ -4,6 +4,23 @@ All notable changes to iPASide are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.2.1] - 2026-08-13
+
+### Fixed
+
+- **Dopamine compatibility is device- and build-aware.** A12 iPhones retain
+  their real iOS 18 ceiling while eligible A12/A12X/A12Z iPads reach iPadOS
+  26.0.1. Dopamine 3.0.5's iOS/iPadOS 26.1 beta 1–3 support is matched by exact
+  build number, so the patched 26.1 final release is never accepted by mistake.
+- **Install revalidates and pins the target device.** The engine now checks the
+  live compatibility list immediately before downloading, then installs to that
+  exact resolved UDID; direct CLI calls and a device swap cannot bypass the
+  compatibility gate.
+- **The compatibility catalog now covers missing and mislabeled hardware.**
+  Legacy A8X/A9X/A10X iPads, current iPads through M5, iPod touch models, and
+  iPhone 17e are represented with model-specific firmware ceilings. The remote
+  schema is validated before any rule can influence installation.
+
 ## [1.2.0] - 2026-08-13
 
 ### Added

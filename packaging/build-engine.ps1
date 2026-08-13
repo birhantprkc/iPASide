@@ -73,7 +73,12 @@ robocopy "$base\DLLs" "$eng\DLLs" /E /NFL /NDL /NJH /NJS /NP `
 $global:LASTEXITCODE = 0
 
 Write-Host "== Installing runtime dependencies =="
+# The target is a fresh portable tree. Ignore host packages and their conflicts:
+# pip otherwise warns about unrelated packages in the build venv (for example
+# pyOpenSSL, which is not shipped) even though every target dependency is isolated.
 & $Python -m pip install --disable-pip-version-check --no-warn-script-location `
+    --no-warn-conflicts `
+    --ignore-installed `
     --target "$site" -r "src\iPASide.Engine\requirements.txt"
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
