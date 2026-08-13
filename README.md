@@ -74,6 +74,12 @@ plan around.
 
 ![LiveContainer](docs/screenshots/livecontainer.png)
 
+**Jailbreak** — iPASide checks whether Dopamine supports your iPhone's chip and iOS,
+then installs the latest release in one press. It is an ordinary sideload; the
+jailbreak itself only runs on your phone the first time you open Dopamine.
+
+![Jailbreak](docs/screenshots/jailbreak.png)
+
 **Account** — every certificate on your Apple ID and which tool registered it, so you
 can tidy up without breaking something you did not know was there.
 
