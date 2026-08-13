@@ -7,9 +7,9 @@ runs on the phone afterwards, exactly as if the user had sideloaded Dopamine by 
 
 Two responsibilities live here:
 
-* **Advise.** From the connected device's ``ProductType`` (e.g. ``iPhone12,1``) and
-  ``ProductVersion`` (e.g. ``16.7.15``), work out the chip and say whether Dopamine
-  supports that chip on that iOS version.
+* **Advise.** From the connected device's ``ProductType`` (e.g. ``iPhone12,1``),
+  ``ProductVersion`` (e.g. ``16.7.15``), and ``BuildVersion`` when a beta must be
+  distinguished from its final release, work out whether Dopamine supports it.
 
   The compatibility data is **not** baked into this build. It is fetched at runtime from
   :data:`COMPAT_URL` (a JSON file in the iPASide repo), so when Dopamine adds a new iOS
@@ -88,11 +88,7 @@ def fetch_compat() -> dict[str, Any]:
             "connection and try again."
         ) from exc
 
-    if (
-        not isinstance(document, dict)
-        or not isinstance(document.get("devices"), dict)
-        or not isinstance(document.get("support"), dict)
-    ):
+    if not _valid_compat_document(document):
         raise JailbreakError(
             "The jailbreak compatibility list was malformed. Try again shortly."
         )
@@ -138,20 +134,132 @@ def parse_version(value: str | None) -> tuple[int, int, int] | None:
     return (numbers[0], numbers[1], numbers[2])
 
 
+def _valid_ranges(value: Any) -> bool:
+    """Whether a remote range list is ordered, non-overlapping, and parseable."""
+    if not isinstance(value, list):
+        return False
+    previous_high: tuple[int, int, int] | None = None
+    for pair in value:
+        if not isinstance(pair, list) or len(pair) != 2:
+            return False
+        low = parse_version(pair[0]) if isinstance(pair[0], str) else None
+        high = parse_version(pair[1]) if isinstance(pair[1], str) else None
+        if low is None or high is None or low > high:
+            return False
+        if previous_high is not None and previous_high >= low:
+            return False
+        previous_high = high
+    return True
+
+
+def _string_list(value: Any) -> list[str] | None:
+    """A validated list of non-empty strings, or None for the wrong shape."""
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and bool(item) for item in value
+    ):
+        return None
+    return value
+
+
+def _valid_build_rules(
+    value: Any, known_chips: set[str], known_devices: set[str]
+) -> bool:
+    """Validate exact-build selectors and reject ambiguous duplicate rules."""
+    if not isinstance(value, list):
+        return False
+    seen: set[tuple[str, str]] = set()
+    for rule in value:
+        if not isinstance(rule, dict):
+            return False
+        version = rule.get("product_version")
+        build = rule.get("build")
+        label = rule.get("label")
+        chips = _string_list(rule.get("chips", []))
+        devices = _string_list(rule.get("devices", []))
+        excluded = _string_list(rule.get("exclude_devices", []))
+        if (
+            not isinstance(version, str)
+            or parse_version(version) is None
+            or not isinstance(build, str)
+            or not build
+            or not isinstance(label, str)
+            or not label
+            or chips is None
+            or devices is None
+            or excluded is None
+            or not (chips or devices)
+            or not set(chips) <= known_chips
+            or not set(devices) <= known_devices
+            or not set(excluded) <= known_devices
+            or (version, build.casefold()) in seen
+        ):
+            return False
+        seen.add((version, build.casefold()))
+    return True
+
+
+def _valid_compat_document(document: Any) -> bool:
+    """Validate schema 3 before any remote rule can influence install gating."""
+    if not isinstance(document, dict) or document.get("schema") != 3:
+        return False
+    support = document.get("support")
+    devices = document.get("devices")
+    no_jailbreak = _string_list(document.get("no_jailbreak"))
+    if not isinstance(support, dict) or not isinstance(devices, dict):
+        return False
+    if no_jailbreak is None:
+        return False
+    if not all(
+        isinstance(chip, str) and bool(chip) and _valid_ranges(ranges)
+        for chip, ranges in support.items()
+    ):
+        return False
+
+    known_chips = set(support) | set(no_jailbreak)
+    for product_type, entry in devices.items():
+        if (
+            not isinstance(product_type, str)
+            or not product_type
+            or not isinstance(entry, dict)
+            or entry.get("chip") not in known_chips
+            or not isinstance(entry.get("name"), str)
+            or not entry["name"]
+            or ("support" in entry and not _valid_ranges(entry["support"]))
+        ):
+            return False
+    return _valid_build_rules(
+        document.get("build_support"), known_chips, set(devices)
+    )
+
+
 def _format_version(version: tuple[int, int, int]) -> str:
     """Render a version tuple, dropping a trailing zero patch (26.0.0 -> 26.0)."""
     major, minor, patch = version
     return f"{major}.{minor}" if patch == 0 else f"{major}.{minor}.{patch}"
 
 
-def _ranges_for(compat: dict[str, Any], chip: str) -> list[tuple[tuple[int, int, int], tuple[int, int, int]]]:
-    """The parsed (min, max) version ranges a chip is supported on, from the compat list.
+def _ranges_for(
+    compat: dict[str, Any], chip: str, product_type: str | None = None
+) -> list[tuple[tuple[int, int, int], tuple[int, int, int]]]:
+    """The parsed (min, max) ranges for a device, falling back to its chip.
 
-    A malformed or missing pair is skipped rather than raising: one bad entry in the
-    remote file must not take down the whole advisor.
+    Most devices use the chip-wide ``support`` table. A device may carry its own
+    ``support`` list when two products with the same chip cannot run the same OS
+    generations (A12 iPhones stop at iOS 18 while A12 iPads run iPadOS 26).
+    A malformed pair is skipped rather than raising: one bad remote entry must not
+    take down the whole advisor.
     """
+    pairs: Any = compat.get("support", {}).get(chip, [])
+    if product_type:
+        entry = compat.get("devices", {}).get(product_type)
+        if isinstance(entry, dict) and "support" in entry:
+            pairs = entry.get("support")
+
+    if not isinstance(pairs, (list, tuple)):
+        return []
+
     parsed: list[tuple[tuple[int, int, int], tuple[int, int, int]]] = []
-    for pair in compat.get("support", {}).get(chip, []) or []:
+    for pair in pairs:
         if not isinstance(pair, (list, tuple)) or len(pair) != 2:
             continue
         low = parse_version(str(pair[0]))
@@ -159,6 +267,79 @@ def _ranges_for(compat: dict[str, Any], chip: str) -> list[tuple[tuple[int, int,
         if low is not None and high is not None:
             parsed.append((low, high))
     return parsed
+
+
+def _has_device_support_override(
+    compat: dict[str, Any], product_type: str | None
+) -> bool:
+    """Whether a device deliberately replaces its chip-wide numeric ranges."""
+    if not product_type:
+        return False
+    entry = compat.get("devices", {}).get(product_type)
+    return isinstance(entry, dict) and "support" in entry
+
+
+def _build_rules_for(
+    compat: dict[str, Any], chip: str, product_type: str | None
+) -> list[tuple[tuple[int, int, int], str, str]]:
+    """Exact beta-build rules applying to this chip or ProductType.
+
+    Each tuple is ``(ProductVersion, BuildVersion, display label)``. Exact builds
+    are intentionally separate from numeric ranges: treating ``26.1 beta 3`` as
+    all of ``26.1`` would incorrectly accept the patched final release.
+    """
+    raw_rules = compat.get("build_support")
+    if not isinstance(raw_rules, list):
+        return []
+
+    parsed: list[tuple[tuple[int, int, int], str, str]] = []
+    for rule in raw_rules:
+        if not isinstance(rule, dict):
+            continue
+        chips = rule.get("chips")
+        devices = rule.get("devices")
+        excluded_devices = rule.get("exclude_devices")
+        selected = (
+            isinstance(chips, list) and chip in chips
+        ) or (
+            product_type is not None
+            and isinstance(devices, list)
+            and product_type in devices
+        )
+        excluded = (
+            product_type is not None
+            and isinstance(excluded_devices, list)
+            and product_type in excluded_devices
+        )
+        applies = selected and not excluded
+        version_text = rule.get("product_version")
+        if not isinstance(version_text, str):
+            continue
+        version = parse_version(version_text)
+        build = rule.get("build")
+        label = rule.get("label")
+        if applies and version is not None and isinstance(build, str) and build:
+            display_label = (
+                label if isinstance(label, str) and label else version_text
+            )
+            parsed.append(
+                (version, build, display_label)
+            )
+    return parsed
+
+
+def _support_ceiling(
+    ranges: list[tuple[tuple[int, int, int], tuple[int, int, int]]],
+    build_rules: list[tuple[tuple[int, int, int], str, str]],
+) -> tuple[tuple[int, int, int], str] | None:
+    """Highest supported release/beta and the exact label the UI should show."""
+    candidates = [(high, _format_version(high)) for _low, high in ranges]
+    candidates.extend((version, label) for version, _build, label in build_rules)
+    ceiling: tuple[tuple[int, int, int], str] | None = None
+    for candidate in candidates:
+        if ceiling is None or candidate[0] >= ceiling[0]:
+            ceiling = candidate
+    return ceiling
 
 
 # Advisor outcomes.
@@ -169,7 +350,10 @@ UNKNOWN_DEVICE = "unknown_device"
 
 
 def advise(
-    product_type: str | None, product_version: str | None, compat: dict[str, Any]
+    product_type: str | None,
+    product_version: str | None,
+    compat: dict[str, Any],
+    build_version: str | None = None,
 ) -> dict[str, Any]:
     """Whether Dopamine fits the given device, and why, against a fetched compat list.
 
@@ -189,6 +373,7 @@ def advise(
         "device_name": name,
         "chip": chip,
         "ios_version": product_version,
+        "build_version": build_version,
         "can_install": False,
     }
 
@@ -208,8 +393,17 @@ def advise(
         )
         return result
 
-    ranges = _ranges_for(compat, chip)
-    if not ranges:
+    ranges = _ranges_for(compat, chip, product_type)
+    build_rules = _build_rules_for(compat, chip, product_type)
+    ceiling = _support_ceiling(ranges, build_rules)
+    if ceiling is None and _has_device_support_override(compat, product_type):
+        result["outcome"] = UNSUPPORTED_VERSION
+        result["summary"] = (
+            f"{name} ({chip}) cannot run an iOS or iPadOS version supported by "
+            f"{tool['name']}."
+        )
+        return result
+    if ceiling is None:
         result["outcome"] = UNKNOWN_DEVICE
         result["summary"] = (
             f"Could not determine {tool['name']} support for the {chip} chip. Check its "
@@ -217,8 +411,7 @@ def advise(
         )
         return result
 
-    ceiling = max(high for _low, high in ranges)
-    ceiling_text = _format_version(ceiling)
+    ceiling_version, ceiling_text = ceiling
     result["max_supported"] = ceiling_text
 
     if running is None:
@@ -229,17 +422,32 @@ def advise(
         )
         return result
 
-    if any(low <= running <= high for low, high in ranges):
+    matched_build_label = None
+    if isinstance(build_version, str):
+        matched_build_label = next(
+            (
+                label
+                for version, supported, label in build_rules
+                if running == version
+                and build_version.casefold() == supported.casefold()
+            ),
+            None,
+        )
+    if (
+        any(low <= running <= high for low, high in ranges)
+        or matched_build_label is not None
+    ):
+        running_text = matched_build_label or product_version
         result["outcome"] = SUPPORTED
         result["can_install"] = True
         result["summary"] = (
-            f"{name} ({chip}) on iOS {product_version} is supported by {tool['name']} "
+            f"{name} ({chip}) on iOS {running_text} is supported by {tool['name']} "
             f"(up to iOS {ceiling_text})."
         )
         return result
 
     result["outcome"] = UNSUPPORTED_VERSION
-    if running > ceiling:
+    if running > ceiling_version:
         result["summary"] = (
             f"{name} ({chip}) on iOS {product_version} is too new for {tool['name']} \u2014 "
             f"it supports up to iOS {ceiling_text} on this chip."

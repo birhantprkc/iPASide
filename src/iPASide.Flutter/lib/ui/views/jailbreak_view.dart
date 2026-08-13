@@ -293,12 +293,10 @@ class _ExplainerCard extends StatelessWidget {
             const SizedBox(height: Space.s4),
             const _Point(
               icon: Icons.memory_outlined,
-              title: 'It depends on your chip and iOS',
-              body: 'Dopamine covers a wide range: A8\u2013A11 on older iOS, A12/A13 up '
-                  'to iOS 26.0.1, and A14\u2013A17 up to iOS 17.3.1 \u2014 each capped at '
-                  'the newest iOS that chip can run. Only the newest chips (iPhone 16 '
-                  'and 17) have no public jailbreak yet. The card above checks your '
-                  'device for you.',
+              title: 'It depends on your device and iOS build',
+              body: 'Support can differ between devices with the same chip, and beta-only '
+                  'support depends on the exact build. iPASide checks the live Dopamine '
+                  'compatibility list before it enables Install.',
             ),
             const SizedBox(height: Space.s4),
             const _Point(

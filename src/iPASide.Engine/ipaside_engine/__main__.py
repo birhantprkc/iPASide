@@ -568,6 +568,32 @@ _JAILBREAK_ERRORS = (
 )
 
 
+def _jailbreak_advice(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
+    """Evaluate one device and pin its resolved UDID for any following install."""
+    compat = jailbreak.fetch_compat()
+    try:
+        info = device.get_device_info(args.udid)
+    except device.DeviceError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - usbmuxd down, device locked, refused
+        raise jailbreak.JailbreakError(
+            "Couldn't read the device. Connect an iPhone over USB, unlock it and "
+            "trust this computer, then try again."
+        ) from exc
+    resolved_udid = info.get("UniqueDeviceID") or args.udid
+    if not isinstance(resolved_udid, str) or not resolved_udid:
+        raise jailbreak.JailbreakError(
+            "Couldn't identify the connected device. Reconnect it over USB and try again."
+        )
+    advice = jailbreak.advise(
+        info.get("ProductType"),
+        info.get("ProductVersion"),
+        compat,
+        info.get("BuildVersion"),
+    )
+    return advice, resolved_udid
+
+
 def _cmd_jailbreak(args: argparse.Namespace) -> int:
     """Advise on jailbreak compatibility, or download / install Dopamine.
 
@@ -585,8 +611,13 @@ def _cmd_jailbreak(args: argparse.Namespace) -> int:
             return 0
 
         if args.install:
+            advice, resolved_udid = _jailbreak_advice(args)
+            if not advice.get("can_install"):
+                raise jailbreak.JailbreakError(
+                    str(advice.get("summary") or "Dopamine does not support this device.")
+                )
             result = jailbreak.install(
-                args.udid,
+                resolved_udid,
                 ipa_path=args.ipa,
                 keep_signed=args.keep_signed,
                 signed_dir=args.signed_dir,
@@ -605,21 +636,7 @@ def _cmd_jailbreak(args: argparse.Namespace) -> int:
         # Default: advise on the connected device. The compatibility list is fetched
         # live (no bundled fallback), so a network failure here surfaces as an error the
         # UI answers with a Retry button.
-        compat = jailbreak.fetch_compat()
-        try:
-            info = device.get_device_info(args.udid)
-        except device.DeviceError:
-            # Already a friendly "no device connected" message; the outer handler
-            # renders it.
-            raise
-        except Exception as exc:  # noqa: BLE001 - usbmuxd down, device locked, refused
-            raise jailbreak.JailbreakError(
-                "Couldn't read the device. Connect an iPhone over USB, unlock it and "
-                "trust this computer, then try again."
-            ) from exc
-        advice = jailbreak.advise(
-            info.get("ProductType"), info.get("ProductVersion"), compat
-        )
+        advice, _resolved_udid = _jailbreak_advice(args)
         if args.json:
             _emit(args, advice)
         else:
