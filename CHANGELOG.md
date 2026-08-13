@@ -4,6 +4,21 @@ All notable changes to iPASide are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.2.0] - 2026-08-13
+
+### Added
+
+- **Jailbreak tab.** iPASide now checks whether
+  [Dopamine](https://github.com/opa334/Dopamine) supports your connected
+  iPhone — worked out from its chip and iOS version — and installs the latest
+  release in one click. It is an ordinary sideload: iPASide signs and installs
+  Dopamine and refreshes it before its 7-day profile expires, and the exploit
+  only runs on the phone the first time you open Dopamine.
+- **Live compatibility list.** The supported chips and iOS ranges are fetched at
+  runtime from `compat/dopamine.json` in this repo, so support can widen (a new
+  iOS, a newer device) by editing that one file — no new iPASide build required.
+  If the list can't be fetched, the tab shows a Retry button instead of guessing.
+
 ## [1.1.6] - 2026-08-01
 
 ### Fixed

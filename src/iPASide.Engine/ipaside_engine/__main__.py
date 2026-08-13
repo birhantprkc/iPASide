@@ -29,6 +29,7 @@ from . import (
     doctor,
     gsa,
     ipa,
+    jailbreak,
     livecontainer,
     lockdown,
     provision,
@@ -556,6 +557,82 @@ def _cmd_livecontainer(args: argparse.Namespace) -> int:
     return 0
 
 
+_JAILBREAK_ERRORS = (
+    jailbreak.JailbreakError,
+    gsa.GsaError,
+    developer.DeveloperServicesError,
+    signing.SigningError,
+    sideload.SideloadError,
+    device.DeviceError,
+    ValueError,
+)
+
+
+def _cmd_jailbreak(args: argparse.Namespace) -> int:
+    """Advise on jailbreak compatibility, or download / install Dopamine.
+
+    With no flags it reads the connected device and reports whether Dopamine fits it.
+    ``--install`` signs and installs Dopamine (downloading the latest IPA unless ``--ipa``
+    is given); ``--download`` only fetches the IPA.
+    """
+    try:
+        if args.download and not args.install:
+            result = jailbreak.download(args.dir, on_progress=_progress_to_stderr())
+            if args.json:
+                _emit(args, result)
+            else:
+                print(f"Downloaded {result['asset_name']} ({result['version']}) to {result['path']}")
+            return 0
+
+        if args.install:
+            result = jailbreak.install(
+                args.udid,
+                ipa_path=args.ipa,
+                keep_signed=args.keep_signed,
+                signed_dir=args.signed_dir,
+                on_progress=_progress_to_stderr(),
+            )
+            if args.json:
+                _emit(args, result)
+            else:
+                print(f"Installed {jailbreak.TOOL['name']} ({result['bundle_id']}).")
+                print(
+                    "Open it on your iPhone to run the jailbreak. iPASide will refresh it "
+                    "before its 7-day profile expires."
+                )
+            return 0
+
+        # Default: advise on the connected device. The compatibility list is fetched
+        # live (no bundled fallback), so a network failure here surfaces as an error the
+        # UI answers with a Retry button.
+        compat = jailbreak.fetch_compat()
+        try:
+            info = device.get_device_info(args.udid)
+        except device.DeviceError:
+            # Already a friendly "no device connected" message; the outer handler
+            # renders it.
+            raise
+        except Exception as exc:  # noqa: BLE001 - usbmuxd down, device locked, refused
+            raise jailbreak.JailbreakError(
+                "Couldn't read the device. Connect an iPhone over USB, unlock it and "
+                "trust this computer, then try again."
+            ) from exc
+        advice = jailbreak.advise(
+            info.get("ProductType"), info.get("ProductVersion"), compat
+        )
+        if args.json:
+            _emit(args, advice)
+        else:
+            print(advice["summary"])
+        return 0
+    except _JAILBREAK_ERRORS as exc:
+        if args.json:
+            _emit(args, {"status": "error", "error": str(exc)})
+        else:
+            print(f"Jailbreak command failed: {exc}")
+        return 1
+
+
 def _cmd_installs(args: argparse.Namespace) -> int:
     records = refresh.records()
     if args.json:
@@ -1034,6 +1111,7 @@ _HANDLERS = {
     "sign": _cmd_sign,
     "sideload": _cmd_sideload,
     "livecontainer": _cmd_livecontainer,
+    "jailbreak": _cmd_jailbreak,
     "installs": _cmd_installs,
     "refresh": _cmd_refresh,
     "signed": _cmd_signed,
@@ -1285,6 +1363,26 @@ def build_parser() -> argparse.ArgumentParser:
     lc_parser.add_argument(
         "--remove", default=None, metavar="BUNDLE_ID",
         help="remove an app from inside LiveContainer",
+    )
+
+    jb_parser = sub.add_parser(
+        "jailbreak", parents=[common, target, signed_output],
+        help="check jailbreak compatibility, or download / install Dopamine",
+    )
+    jb_parser.add_argument(
+        "--install", action="store_true",
+        help="sign + install Dopamine (downloads the latest IPA unless --ipa is given)",
+    )
+    jb_parser.add_argument(
+        "--download", action="store_true", help="download the latest Dopamine IPA only",
+    )
+    jb_parser.add_argument(
+        "--ipa", default=None,
+        help="Dopamine .ipa to install (default: download the latest release)",
+    )
+    jb_parser.add_argument(
+        "--dir", default=None,
+        help="folder for the downloaded IPA (default: the app's downloads folder)",
     )
 
     sub.add_parser("installs", parents=[common], help="list apps iPASide has sideloaded (with expiry)")

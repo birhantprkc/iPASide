@@ -13,6 +13,7 @@ import '../views/account_view.dart';
 import '../views/apps_view.dart';
 import '../views/diagnostics_view.dart';
 import '../views/home_view.dart';
+import '../views/jailbreak_view.dart';
 import '../views/library_view.dart';
 import '../views/live_container_view.dart';
 import '../views/settings_view.dart';
@@ -95,6 +96,7 @@ class _AppShellState extends State<AppShell> {
     NavKey.library => const LibraryView(),
     NavKey.apps => const AppsView(),
     NavKey.liveContainer => const LiveContainerView(),
+    NavKey.jailbreak => const JailbreakView(),
     NavKey.account => const AccountView(),
     NavKey.diagnostics => const DiagnosticsView(),
     NavKey.settings => const SettingsView(),
