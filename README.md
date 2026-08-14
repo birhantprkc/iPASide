@@ -13,7 +13,7 @@ No jailbreak. No paid developer account. No closed-source middleman.
 [![Windows](https://img.shields.io/badge/Windows%2010%2F11-64--bit-blue?style=for-the-badge)](#get-started)
 [![Website](https://img.shields.io/badge/ipaside.com-visit-8c5cf0?style=for-the-badge)](https://ipaside.com)
 [![CI](https://img.shields.io/github/actions/workflow/status/pwnapplehat/iPASide/ci.yml?branch=main&style=for-the-badge&label=CI)](https://github.com/pwnapplehat/iPASide/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-1282-4cc38a?style=for-the-badge)](#quality)
+[![Tests](https://img.shields.io/badge/tests-1283-4cc38a?style=for-the-badge)](#quality)
 
 *Open source, end to end. Nothing between your Apple ID and Apple.*
 
@@ -264,7 +264,7 @@ pick how to reach it.
 Working end to end, and verified that way rather than assumed: iPASide signs and
 installs real apps onto a physical **iPhone 8 Plus (iOS 16.7.15)** with a free
 Apple ID, over USB. Pairing import, EscapeOS sideload, and pairing placement were
-verified on a physical **iPhone 17 (iOS 26.5.1)** with this 1.2.3 installer.
+verified on a physical **iPhone 17 (iOS 26.5.1)** with this 1.2.4 installer.
 Each release is installed and driven against a real device before it is published.
 
 Not yet verified: a full install over Wi-Fi (talking to the device over Wi-Fi does
@@ -277,11 +277,11 @@ profile.
 
 ## Quality
 
-**1,282 automated tests**, run on every push along with a full installer build:
+**1,283 automated tests**, run on every push along with a full installer build:
 
 | Suite | Tests | Files | What it covers |
 |---|---|---|---|
-| Engine (pytest) | 504 | 26 | Apple ID auth, provisioning, app groups, signing, `.deb` tweak extraction, install progress, device selection, multi-account, LiveContainer entitlements, pairing files, certificate scoping, Windows path limits, expiry, error phrasing |
+| Engine (pytest) | 505 | 26 | Apple ID auth, provisioning, app groups, signing, `.deb` tweak extraction, install progress, device selection, multi-account, LiveContainer entitlements, pairing files, certificate scoping, Windows path limits, expiry, error phrasing |
 | App (Flutter) | 778 | 41 | Every view model, the engine transport, update planning, settings, the platform layer, motion, scroll |
 
 CI runs three jobs per push - `Engine tests`, `App analyze + tests`, `Build installer` -

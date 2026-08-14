@@ -155,6 +155,19 @@ def match_consumer(bundle_id: str) -> PairingConsumer | None:
     return None
 
 
+def _resolve_installed_consumer(requested: str, installed: dict[str, Any]) -> str | None:
+    """Exact installed bundle id, or the team-suffixed install matching ``requested``."""
+    if requested in installed:
+        return requested
+    consumer = match_consumer(requested)
+    if consumer is None:
+        return None
+    for bundle_id in installed:
+        if consumer.matches(bundle_id):
+            return bundle_id
+    return None
+
+
 def has_lockdown_keys(record: dict[str, Any]) -> bool:
     """True when the record can drive a lockdown / minimuxer session."""
     return bool(record.get("DeviceCertificate") and record.get("HostCertificate"))
@@ -554,7 +567,8 @@ def deliver_to_device(
     placed: list[dict[str, Any]] = []
     if wanted:
         for bundle_id in wanted:
-            if bundle_id not in installed:
+            installed_id = _resolve_installed_consumer(bundle_id, installed)
+            if installed_id is None:
                 matched = match_consumer(bundle_id)
                 placed.append(
                     {
@@ -567,7 +581,7 @@ def deliver_to_device(
                     }
                 )
                 continue
-            matched = match_consumer(bundle_id)
+            matched = match_consumer(installed_id)
             if matched is None:
                 placed.append(
                     {
@@ -581,7 +595,7 @@ def deliver_to_device(
                 continue
             placed.append(
                 deliver_to_app(
-                    bundle_id,
+                    installed_id,
                     udid,
                     serial or udid,
                     consumer=matched,

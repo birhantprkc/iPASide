@@ -239,6 +239,32 @@ def test_deliver_to_device_can_target_one_app(lockdown_dir, monkeypatch):
     assert result["placed"][0]["placed"] is True
 
 
+def test_deliver_to_device_accepts_a_bundle_id_without_the_team_suffix(
+    lockdown_dir, monkeypatch
+):
+    lockdown_dir({UDID: {**USBMUX_RECORD, **RP_KEYS}})
+    monkeypatch.setattr(
+        pairing.apps,
+        "list_installed",
+        lambda _serial: {"com.ipaside.escapeos.TEAM": {"name": "EscapeOS"}},
+    )
+    written: list[str] = []
+
+    async def fake_write(bundle_id, _serial, files, *, directories):
+        written.append(bundle_id)
+        return [f"{d}/{next(iter(files))}" for d in directories]
+
+    from ipaside_engine import livecontainer
+
+    monkeypatch.setattr(livecontainer, "_write_documents", fake_write)
+
+    result = pairing.deliver_to_device(UDID, UDID, bundle_ids=["com.ipaside.escapeos"])
+
+    assert written == ["com.ipaside.escapeos.TEAM"]
+    assert result["placed"][0]["placed"] is True
+    assert result["placed"][0]["bundle_id"] == "com.ipaside.escapeos.TEAM"
+
+
 def test_deliver_if_consumer_skips_livecontainer_and_ordinary_apps(lockdown_dir):
     lockdown_dir({UDID: USBMUX_RECORD})
 

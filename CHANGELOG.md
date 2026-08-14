@@ -6,6 +6,23 @@ All notable changes to iPASide are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-08-14
+
+### Changed
+
+- **Pairing matches iLoader's job, without keeping iLoader.** Settings copy and
+  the README now say that USB Trust plus Create keys writes the merged file
+  iLoader would, on iLoader's iOS range (15–26). After Place, the phone does not
+  stay plugged in: EscapeOS / StikDebug / SideStore use LocalDevVPN. EscapeOS
+  itself is iOS 18 and 26 only; iPASide still sideloads and places pairing files
+  on the wider iLoader range.
+
+### Fixed
+
+- **`pairing --app` accepts the unsuffixed bundle id.** Place no longer misses
+  EscapeOS when the CLI is given `com.ipaside.escapeos` instead of the
+  team-id install id.
+
 ## [1.2.3] - 2026-08-14
 
 ### Added
