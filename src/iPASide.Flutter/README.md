@@ -35,7 +35,7 @@ lib/
     theme/     design tokens, light and dark palettes, typography
     widgets/   the shared widget library
     shell/     window chrome, sidebar, drag-drop veil, dialogs
-    views/     the seven screens
+    views/     the sidebar screens plus sign-in
 ```
 
 Two conventions worth knowing before editing:

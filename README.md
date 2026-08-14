@@ -281,17 +281,18 @@ profile.
 
 | Suite | Tests | Files | What it covers |
 |---|---|---|---|
-| Engine (pytest) | 505 | 26 | Apple ID auth, provisioning, app groups, signing, `.deb` tweak extraction, install progress, device selection, multi-account, LiveContainer entitlements, pairing files, certificate scoping, Windows path limits, expiry, error phrasing |
+| Engine (pytest) | 505 | 25 | Apple ID auth, provisioning, app groups, signing, `.deb` tweak extraction, install progress, device selection, multi-account, LiveContainer entitlements, pairing files, certificate scoping, Windows path limits, expiry, error phrasing |
 | App (Flutter) | 778 | 41 | Every view model, the engine transport, update planning, settings, the platform layer, motion, scroll |
 
 CI runs three jobs per push - `Engine tests`, `App analyze + tests`, `Build installer` -
 and lints are errors, not warnings. The badge above links to the runs.
 
-What tests cannot cover is a real phone, so each release is also driven by hand against
-an iPhone 8 Plus on iOS 16.7.15 over both USB and Wi-Fi before it is published. Several
-things in the changelog were found that way rather than by reasoning: the free-account
-three-app ceiling is per *device* and not per Apple ID, and a background refresh really
-does re-sign and reinstall with the app closed.
+What tests cannot cover is a real phone, so each release is also driven by hand
+before it is published. Sideload over USB and Wi-Fi is verified on an iPhone 8 Plus
+(iOS 16.7.15); pairing-file create/place and EscapeOS on an iPhone 17 (iOS 26.5.1).
+Several things in the changelog were found that way rather than by reasoning: the
+free-account three-app ceiling is per *device* and not per Apple ID, and a background
+refresh really does re-sign and reinstall with the app closed.
 
 ## Legal
 
