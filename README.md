@@ -117,11 +117,11 @@ There is a full light theme too, and the sun in the title bar switches to it.
   SideStore and hands it this computer's pairing file, so the phone can re-sign its own
   apps. It needs a local device VPN connected, and an iOS Shortcut named `TurnOffData`
   that iPASide cannot create for you — the app says so rather than letting you find out.
-- **Place a pairing file on the phone.** Settings creates this PC's pairing file over
-  USB (including Remote Pairing keys [EscapeOS](https://github.com/pwnapplehat/EscapeOS)
-  needs on iOS 26.4+), can import a file from another tool, export XML, and write it
-  into EscapeOS, SideStore, AltStore, LiveContainer, and StikDebug under the name
-  each app looks for.
+- **Place a pairing file on the phone.** Settings does the same job as iLoader:
+  USB Trust keys for SideStore / AltStore / LiveContainer on iLoader's iOS range
+  (15–26), plus Remote Pairing keys over USB for EscapeOS and StikDebug on
+  iOS 26.4+. Import an iLoader file if you already have one. After Place, unplug —
+  those apps talk to the phone over LocalDevVPN, not a live USB cable.
 
   <img src="docs/brand/escapeos.png" alt="EscapeOS" width="48" height="48">
 - **See and manage your Apple ID's account.** Certificates, App IDs and devices, for any

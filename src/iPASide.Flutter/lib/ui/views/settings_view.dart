@@ -202,7 +202,7 @@ class _PairingSection extends StatelessWidget {
           SettingsRow(
             title: 'Remote Pairing',
             description:
-                'Created over USB by iPASide. EscapeOS and StikDebug need this on iOS 26.4 and later.',
+                'Created over USB by iPASide, same as iLoader. EscapeOS needs this on iOS 26.4+; iOS 18 can use the USB-trust half. The phone does not stay plugged in to use the app.',
             control: SettingsValue(vm.pairingRemoteText),
           ),
           SettingsRow(

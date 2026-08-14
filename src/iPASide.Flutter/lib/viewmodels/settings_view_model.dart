@@ -362,7 +362,7 @@ class SettingsViewModel extends BaseViewModel {
       _setPairingMessage(
         result.hasRppairing
             ? 'Wrote $where, with Remote Pairing keys.'
-            : 'Wrote $where. Create keys if EscapeOS on iOS 26.4+ needs them.',
+            : 'Wrote $where. Create keys if EscapeOS on iOS 26.4+ needs them (iOS 18 can use USB pairing alone).',
       );
     } on EngineShutdownException {
       return;

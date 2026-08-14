@@ -7,12 +7,20 @@ path; this module is the one place that knows every consumer, can export the fil
 can create the Remote Pairing half over USB, and can still import a file another
 tool wrote.
 
+This is the same job iLoader's pairing manager does, on the same iOS range
+iLoader documents for sideload (15.0–15.8.5, 16.0–17.7.7, 18.0–26.x): Trust
+creates the lockdown half; iPASide adds Remote Pairing keys over that USB
+channel when the phone has CoreDevice (iOS 17+). EscapeOS only supports iOS 18
+and 26; other consumers still get a pairing file on iLoader's full range.
+
 Windows usbmux writes the lockdown half (certificates, HostID, escrow) and omits
 ``UDID`` because the file name carries it. Remote Pairing keys (``identifier``,
 Ed25519 ``public_key`` / ``private_key``, ``alt_irk``) are not in that record.
 iOS 26.4 and later tunnels that EscapeOS and StikDebug use need those keys.
 iPASide creates them itself over the already-trusted USB lockdown channel
 (promptless; no second Trust dialog). Importing an iLoader file remains optional.
+The phone does not stay plugged in to *use* those apps — USB is only to mint
+and place the file.
 """
 
 from __future__ import annotations
@@ -36,14 +44,17 @@ _RP_REQUIRED_KEYS = ("identifier", "public_key", "private_key")
 
 #: Why a lockdown-only file is not enough for EscapeOS on current iOS.
 MISSING_RP_WARNING = (
-    "This file has this PC's USB pairing keys, which SideStore and AltStore use. "
+    "This file has this PC's USB pairing keys, which SideStore and AltStore use "
+    "(same as iLoader, including iOS 15–18). "
     "EscapeOS and StikDebug on iOS 26.4 and later also need Remote Pairing keys. "
-    "Plug the iPhone in over USB and let iPASide create them, then place the file."
+    "Plug the iPhone in over USB once, let iPASide create them, then place the file. "
+    "The cable is not needed afterwards."
 )
 
 HAS_RP_NOTE = (
-    "This file includes Remote Pairing keys, so EscapeOS and StikDebug can use it "
-    "on iOS 26.4 and later."
+    "This file is the iLoader-style merge: USB pairing plus Remote Pairing keys. "
+    "EscapeOS can use it on iOS 18 (lockdown loopback) and iOS 26.4+ (Remote Pairing). "
+    "The phone does not need to stay connected to this PC."
 )
 
 
