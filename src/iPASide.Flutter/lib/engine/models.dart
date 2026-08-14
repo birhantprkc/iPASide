@@ -1139,7 +1139,7 @@ class PairingStatus {
   /// Whether Remote Pairing keys EscapeOS needs on iOS 26.4+ are present.
   final bool hasRppairing;
 
-  /// Whether iPASide is storing an imported iLoader (or other) file for this UDID.
+  /// Whether iPASide is storing a created or imported pairing file for this UDID.
   final bool imported;
 
   /// Path of that imported file on this PC, when [imported] is true.
@@ -1321,6 +1321,66 @@ class PairingImport {
 
   @override
   String toString() => 'PairingImport(from: $from, hasRppairing: $hasRppairing)';
+}
+
+/// Outcome of creating Remote Pairing keys over USB.
+class PairingCreate {
+  /// Creates a create-keys outcome.
+  const PairingCreate({
+    this.created = false,
+    this.path,
+    this.hasLockdown = false,
+    this.hasRppairing = false,
+    this.note,
+    this.error,
+  });
+
+  /// Parses a `pairing --create` payload.
+  factory PairingCreate.fromJson(Map<String, dynamic> json) => PairingCreate(
+        created: jsonBool(json, 'created'),
+        path: jsonString(json, 'path'),
+        hasLockdown: jsonBool(json, 'has_lockdown'),
+        hasRppairing: jsonBool(json, 'has_rppairing'),
+        note: jsonString(json, 'note'),
+        error: jsonString(json, 'error'),
+      );
+
+  /// Whether pair-setup ran this call, rather than reusing keys already stored.
+  final bool created;
+
+  /// Where iPASide stored the merged file.
+  final String? path;
+
+  /// Whether USB pairing certificates are present.
+  final bool hasLockdown;
+
+  /// Whether Remote Pairing keys are present after this call.
+  final bool hasRppairing;
+
+  /// Honest sentence about iOS 26 completeness.
+  final String? note;
+
+  /// Why creation failed, when the engine returned an error field.
+  final String? error;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PairingCreate &&
+          other.created == created &&
+          other.path == path &&
+          other.hasLockdown == hasLockdown &&
+          other.hasRppairing == hasRppairing &&
+          other.note == note &&
+          other.error == error;
+
+  @override
+  int get hashCode =>
+      Object.hash(created, path, hasLockdown, hasRppairing, note, error);
+
+  @override
+  String toString() =>
+      'PairingCreate(created: $created, hasRppairing: $hasRppairing)';
 }
 
 /// One app the pairing file was written into, or the reason it was not.

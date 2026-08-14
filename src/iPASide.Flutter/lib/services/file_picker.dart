@@ -40,7 +40,7 @@ class NativeFilePickerService implements FilePickerService {
   /// Title of the folder dialog behind the Signed IPAs setting.
   static const String signedFolderTitle = 'Choose where to keep signed IPAs';
 
-  /// Title of the dialog that picks an iLoader (or other) pairing plist.
+  /// Title of the dialog that picks an optional pairing plist from another tool.
   static const String pairingOpenTitle = 'Choose a pairing file';
 
   /// Title of the dialog that writes this PC's pairing file to disk.

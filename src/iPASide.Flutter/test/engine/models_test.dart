@@ -494,5 +494,16 @@ void main() {
       expect(delivery.allPlaced, isFalse);
       expect(delivery.placed.last.error, 'busy');
     });
+
+    test('PairingCreate reads created and remote-pairing flags', () {
+      final PairingCreate created = PairingCreate.fromJson(_decode(
+        '{"created":true,"has_lockdown":true,"has_rppairing":true,'
+        '"path":"C:\\\\iPASide\\\\pairing\\\\u.plist"}',
+      ));
+
+      expect(created.created, isTrue);
+      expect(created.hasRppairing, isTrue);
+      expect(created.path, contains('pairing'));
+    });
   });
 }

@@ -610,11 +610,12 @@ def deliver_pairing(bundle_id: str, udid: str, serial: str | None = None) -> dic
     by hand if that location ever changes. On a fresh install SideStore's container does
     not exist until it is first opened, so the directory is created rather than assumed.
 
-    Prefers an imported iLoader file when iPASide has one for this UDID, because that is
-    the record SideStore 0.6.3 asks iOS 26.4+ users to reinstall with.
+    Prefers an imported or iPASide-created Remote Pairing file when one exists
+    for this UDID, because that is the record SideStore 0.6.3 needs on iOS 26.4+.
     """
     from . import pairing as pairing_mod
 
+    pairing_mod._maybe_ensure_remote_pairing(udid, serial, _LOCKDOWN_DIR)
     try:
         payload = pairing_mod.payload_bytes(udid, lockdown_dir=_LOCKDOWN_DIR)
     except pairing_mod.PairingError as exc:

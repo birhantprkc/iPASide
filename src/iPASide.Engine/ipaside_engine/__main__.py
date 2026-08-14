@@ -1117,10 +1117,10 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 def _pairing_udid(args: argparse.Namespace) -> str:
     """The device a pairing command is about.
 
-    ``--udid`` is enough: the lockdown record and any imported iLoader file live
+    ``--udid`` is enough: the lockdown record and any stored pairing file live
     on this PC, so export and import must not refuse to run because the phone is
-    unplugged. Placement still talks to the device, and that path fails later if
-    it cannot be reached.
+    unplugged. Creating Remote Pairing keys and placing the file still talk to
+    the device, and those paths fail later if it cannot be reached.
     """
     if args.udid:
         return args.udid.strip()
@@ -1185,6 +1185,20 @@ def _print_pairing_delivery(result: dict[str, Any]) -> None:
 
 def _cmd_pairing(args: argparse.Namespace) -> int:
     udid = _pairing_udid(args)
+    if args.pairing_create:
+        result = pairing.create_remote_pairing(udid, udid, force=True)
+        if args.json:
+            _emit(args, result)
+            return 0
+        if result.get("created"):
+            print(f"Created Remote Pairing keys for {udid}")
+        else:
+            print(f"Remote Pairing keys already present for {udid}")
+        if result.get("path"):
+            print(f"  Stored at {result['path']}")
+        if result.get("note"):
+            print(f"  {result['note']}")
+        return 1 if result.get("error") or not result.get("has_rppairing") else 0
     if args.pairing_export:
         result = pairing.export_to(udid, args.pairing_export)
         if args.json:
@@ -1204,8 +1218,9 @@ def _cmd_pairing(args: argparse.Namespace) -> int:
         if result.get("note"):
             print(f"  {result['note']}")
         return 0
-    if args.deliver:
-        result = pairing.deliver_to_device(udid, udid)
+    if args.deliver or args.pairing_app:
+        apps_filter = [args.pairing_app] if args.pairing_app else None
+        result = pairing.deliver_to_device(udid, udid, bundle_ids=apps_filter)
         if args.json:
             _emit(args, result)
             return 0
@@ -1455,7 +1470,7 @@ def build_parser() -> argparse.ArgumentParser:
     pairing_parser = sub.add_parser(
         "pairing",
         parents=[common, target],
-        help="export, import, or place this PC's pairing file on the iPhone",
+        help="export, import, create, or place this PC's pairing file on the iPhone",
     )
     pairing_actions = pairing_parser.add_mutually_exclusive_group()
     pairing_actions.add_argument(
@@ -1470,12 +1485,25 @@ def build_parser() -> argparse.ArgumentParser:
         dest="pairing_import",
         default=None,
         metavar="PATH",
-        help="store an iLoader (or other) pairing plist for this device",
+        help="store a pairing plist from another tool (optional; iPASide can create one)",
+    )
+    pairing_actions.add_argument(
+        "--create",
+        dest="pairing_create",
+        action="store_true",
+        help="create Remote Pairing keys over USB (no other app required)",
     )
     pairing_actions.add_argument(
         "--deliver",
         action="store_true",
         help="write the pairing file into every supported app installed on the device",
+    )
+    pairing_parser.add_argument(
+        "--app",
+        dest="pairing_app",
+        default=None,
+        metavar="BUNDLE_ID",
+        help="with --deliver, place only into this installed app",
     )
 
     lc_parser = sub.add_parser(

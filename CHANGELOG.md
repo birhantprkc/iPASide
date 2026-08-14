@@ -4,6 +4,24 @@ All notable changes to iPASide are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+## [1.2.3] - 2026-08-14
+
+### Added
+
+- **iPASide creates Remote Pairing keys itself.** Plug the iPhone in over USB
+  (already trusted) and Settings → Pairing file → Create keys. EscapeOS and
+  StikDebug on iOS 26.4+ no longer need an iLoader file. Import remains optional.
+  `pairing --create` and `pairing --deliver --app BUNDLE_ID` are on the CLI.
+  Sideload still places the file automatically for EscapeOS and the other
+  consumers.
+
+### Changed
+
+- **Pairing file lives in Settings**, not Home: USB / Remote Pairing status,
+  create / import / export, place into every supported app, or Place on one app.
+
 ## [1.2.2] - 2026-08-14
 
 ### Added

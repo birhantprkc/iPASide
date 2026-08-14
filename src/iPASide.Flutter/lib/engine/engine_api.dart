@@ -136,10 +136,26 @@ class EngineApi {
         _asObject(PairingImport.fromJson),
       );
 
-  /// Writes the pairing file into every supported app installed on the device.
-  Future<PairingDelivery> deliverPairing({String? udid, String? connection}) =>
+  /// Creates Remote Pairing keys over USB. No other app is required.
+  Future<PairingCreate> createPairing({String? udid, String? connection}) =>
+      _runTyped<PairingCreate>(
+        <String>['pairing', '--create', ..._targetArgs(udid, connection)],
+        _asObject(PairingCreate.fromJson),
+      );
+
+  /// Writes the pairing file into supported apps, or only [bundleId] when set.
+  Future<PairingDelivery> deliverPairing({
+    String? udid,
+    String? connection,
+    String? bundleId,
+  }) =>
       _runTyped<PairingDelivery>(
-        <String>['pairing', '--deliver', ..._targetArgs(udid, connection)],
+        <String>[
+          'pairing',
+          '--deliver',
+          if (bundleId != null) ...<String>['--app', bundleId],
+          ..._targetArgs(udid, connection),
+        ],
         _asObject(PairingDelivery.fromJson),
       );
 

@@ -607,6 +607,19 @@ void main() {
 
       await api.deliverPairing(udid: 'U');
       expect(runner.lastArgs, <String>['pairing', '--deliver', '--udid', 'U']);
+
+      await api.deliverPairing(udid: 'U', bundleId: 'com.ipaside.escapeos.TEAM');
+      expect(runner.lastArgs, <String>[
+        'pairing',
+        '--deliver',
+        '--app',
+        'com.ipaside.escapeos.TEAM',
+        '--udid',
+        'U',
+      ]);
+
+      await api.createPairing(udid: 'U');
+      expect(runner.lastArgs, <String>['pairing', '--create', '--udid', 'U']);
     });
 
     test('apps maps the bundle-id keyed dict', () async {

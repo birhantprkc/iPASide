@@ -210,6 +210,35 @@ def test_deliver_to_device_places_every_supported_app(lockdown_dir, monkeypatch)
     assert all(item.get("warning") is None for item in result["placed"])
 
 
+def test_deliver_to_device_can_target_one_app(lockdown_dir, monkeypatch):
+    lockdown_dir({UDID: {**USBMUX_RECORD, **RP_KEYS}})
+    monkeypatch.setattr(
+        pairing.apps,
+        "list_installed",
+        lambda _serial: {
+            "com.ipaside.escapeos.TEAM": {"name": "EscapeOS"},
+            "com.kdt.livecontainer.TEAM": {"name": "LiveContainer"},
+        },
+    )
+    written: list[str] = []
+
+    async def fake_write(bundle_id, _serial, files, *, directories):
+        written.append(bundle_id)
+        return [f"{d}/{next(iter(files))}" for d in directories]
+
+    from ipaside_engine import livecontainer
+
+    monkeypatch.setattr(livecontainer, "_write_documents", fake_write)
+
+    result = pairing.deliver_to_device(
+        UDID, UDID, bundle_ids=["com.ipaside.escapeos.TEAM"]
+    )
+
+    assert written == ["com.ipaside.escapeos.TEAM"]
+    assert result["supported_installed"] == 1
+    assert result["placed"][0]["placed"] is True
+
+
 def test_deliver_if_consumer_skips_livecontainer_and_ordinary_apps(lockdown_dir):
     lockdown_dir({UDID: USBMUX_RECORD})
 
@@ -254,6 +283,92 @@ def test_status_survives_a_device_that_cannot_be_listed(lockdown_dir, monkeypatc
     assert report["consumers"] == []
 
 
+def test_create_remote_pairing_merges_usb_keys_from_this_pc(lockdown_dir, monkeypatch):
+    lockdown_dir({UDID: USBMUX_RECORD})
+    monkeypatch.setattr(
+        pairing,
+        "_remote_pair_keys",
+        lambda udid, serial=None: dict(RP_KEYS),
+    )
+
+    result = pairing.create_remote_pairing(UDID, UDID)
+    record = pairing.payload_record(UDID)
+
+    assert result["created"] is True
+    assert result["has_rppairing"] is True
+    assert pairing.has_lockdown_keys(record) is True
+    assert record["identifier"] == RP_KEYS["identifier"]
+    assert record["DeviceCertificate"] == USBMUX_RECORD["DeviceCertificate"]
+    assert pairing.inspect_record(UDID)["source"] == "imported"
+
+
+def test_create_remote_pairing_skips_the_phone_when_keys_already_exist(
+    lockdown_dir, monkeypatch
+):
+    lockdown_dir({UDID: {**USBMUX_RECORD, **RP_KEYS}})
+    calls: list[str] = []
+
+    def boom(udid, serial=None):
+        calls.append(udid)
+        raise AssertionError("must not talk to the phone")
+
+    monkeypatch.setattr(pairing, "_remote_pair_keys", boom)
+
+    result = pairing.create_remote_pairing(UDID, UDID)
+
+    assert result["created"] is False
+    assert result["has_rppairing"] is True
+    assert calls == []
+
+
+def test_create_remote_pairing_force_replaces_existing_keys(lockdown_dir, monkeypatch):
+    lockdown_dir({UDID: {**USBMUX_RECORD, **RP_KEYS}})
+    replacement = {
+        "identifier": "ffffffff-1111-2222-3333-444444444444",
+        "public_key": b"\x11" * 32,
+        "private_key": b"\x22" * 32,
+    }
+    monkeypatch.setattr(
+        pairing, "_remote_pair_keys", lambda udid, serial=None: replacement
+    )
+
+    result = pairing.create_remote_pairing(UDID, UDID, force=True)
+    record = pairing.payload_record(UDID)
+
+    assert result["created"] is True
+    assert record["private_key"] == replacement["private_key"]
+
+
+def test_deliver_to_device_does_not_call_the_phone_from_a_test_lockdown_dir(
+    lockdown_dir, monkeypatch
+):
+    """Unit tests patch Lockdown; they must not trigger USB pair-setup."""
+    lockdown_dir({UDID: USBMUX_RECORD})
+    monkeypatch.setattr(
+        pairing.apps,
+        "list_installed",
+        lambda _serial: {"com.ipaside.escapeos.TEAM": {"name": "EscapeOS"}},
+    )
+
+    def boom(udid, serial=None):
+        raise AssertionError("test lockdown dir must not create Remote Pairing")
+
+    monkeypatch.setattr(pairing, "_remote_pair_keys", boom)
+
+    async def fake_write(bundle_id, _serial, files, *, directories):
+        return [f"{d}/{next(iter(files))}" for d in directories]
+
+    from ipaside_engine import livecontainer
+
+    monkeypatch.setattr(livecontainer, "_write_documents", fake_write)
+
+    result = pairing.deliver_to_device(UDID, UDID)
+
+    assert result["has_rppairing"] is False
+    assert result["placed"][0]["placed"] is True
+    assert result["placed"][0]["warning"] is not None
+
+
 def test_cli_pairing_flags_are_mutually_exclusive():
     parser = build_parser()
     args = parser.parse_args(["pairing", "--json", "--udid", UDID])
@@ -261,6 +376,7 @@ def test_cli_pairing_flags_are_mutually_exclusive():
     assert args.pairing_export is None
     assert args.pairing_import is None
     assert args.deliver is False
+    assert args.pairing_create is False
 
     exported = parser.parse_args(["pairing", "--export", r"C:\out.plist", "--udid", UDID])
     assert exported.pairing_export == r"C:\out.plist"
@@ -268,5 +384,14 @@ def test_cli_pairing_flags_are_mutually_exclusive():
     imported = parser.parse_args(["pairing", "--import", r"C:\in.plist", "--udid", UDID])
     assert imported.pairing_import == r"C:\in.plist"
 
+    created = parser.parse_args(["pairing", "--create", "--udid", UDID])
+    assert created.pairing_create is True
+
     delivered = parser.parse_args(["pairing", "--deliver", "--udid", UDID])
     assert delivered.deliver is True
+    assert delivered.pairing_app is None
+
+    one = parser.parse_args(
+        ["pairing", "--deliver", "--app", "com.ipaside.escapeos.TEAM", "--udid", UDID]
+    )
+    assert one.pairing_app == "com.ipaside.escapeos.TEAM"

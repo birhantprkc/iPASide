@@ -19,8 +19,8 @@ import '../widgets/progress.dart';
 import '../widgets/settings_layout.dart';
 import '../widgets/smooth_scroll.dart';
 
-/// Settings: appearance, auto-refresh, signed IPAs, account, anisette, updates
-/// and about.
+/// Settings: appearance, device, pairing file, auto-refresh, signed IPAs,
+/// account, anisette, updates and about.
 ///
 /// One column of full-width grouped sections rather than a grid of cards. The
 /// sections carry wildly different amounts of content — three lines of prose and
@@ -40,6 +40,7 @@ class SettingsView extends StatelessWidget {
           settings: ctx.read<SettingsStore>(),
           picker: ctx.read<FilePickerService>(),
           dialogs: ctx.read<DialogService>(),
+          devices: ctx.read<DeviceSelection>(),
         ),
         child: const _SettingsBody(),
       );
@@ -57,6 +58,7 @@ class _SettingsBody extends StatelessWidget {
     final sections = <Widget>[
       const _AppearanceSection(),
       const _DeviceSection(),
+      _PairingSection(vm: vm),
       if (vm.autoRefreshSupported) _AutoRefreshSection(vm: vm),
       _SignedIpaSection(vm: vm),
       _AccountSection(vm: vm),
@@ -168,6 +170,138 @@ class _DeviceSection extends StatelessWidget {
           ),
       ],
     );
+  }
+}
+
+/// This PC's pairing file for the selected iPhone, and the apps that read it.
+class _PairingSection extends StatelessWidget {
+  const _PairingSection({required this.vm});
+
+  final SettingsViewModel vm;
+
+  @override
+  Widget build(BuildContext context) {
+    return SettingsSection(
+      label: 'PAIRING FILE',
+      children: [
+        if (vm.isPairingLoading)
+          const SettingsBlock(
+            child: SettingsLoadingLine(label: 'Reading pairing file\u2026'),
+          )
+        else if (vm.hasPairingError)
+          SettingsBlock(
+            child: Text(vm.pairingError!, style: context.t.bodyMuted),
+          )
+        else ...[
+          SettingsRow(
+            title: 'USB pairing',
+            description:
+                'Created when you tap Trust on the iPhone. SideStore and AltStore use this half.',
+            control: SettingsValue(vm.pairingUsbText),
+          ),
+          SettingsRow(
+            title: 'Remote Pairing',
+            description:
+                'Created over USB by iPASide. EscapeOS and StikDebug need this on iOS 26.4 and later.',
+            control: SettingsValue(vm.pairingRemoteText),
+          ),
+          SettingsRow(
+            title: 'This PC\u2019s file',
+            description: vm.pairing?.note ??
+                'Connect an iPhone over USB and trust this PC, then create keys.',
+            control: Wrap(
+              spacing: Space.s2,
+              runSpacing: Space.s2,
+              children: [
+                AppButton(
+                  label: 'Create keys',
+                  compact: true,
+                  busy: vm.isPairingBusy,
+                  onPressed: vm.canCreatePairing ? vm.createPairing : null,
+                ),
+                AppButton(
+                  label: 'Import\u2026',
+                  compact: true,
+                  busy: vm.isPairingBusy,
+                  onPressed: vm.canImportPairing ? vm.importPairing : null,
+                ),
+                AppButton(
+                  label: 'Export\u2026',
+                  compact: true,
+                  busy: vm.isPairingBusy,
+                  onPressed: vm.canExportPairing ? vm.exportPairing : null,
+                ),
+              ],
+            ),
+          ),
+          SettingsRow(
+            title: 'Place on the iPhone',
+            description:
+                'Writes the file into every supported app\u2019s Documents folder, under the name that app looks for.',
+            control: AppButton(
+              label: 'Place in all apps',
+              tone: ButtonTone.primary,
+              compact: true,
+              busy: vm.isPairingBusy,
+              onPressed: vm.canPlacePairing ? vm.placePairing : null,
+            ),
+            detail: vm.hasPairingMessage
+                ? SettingsStatusLine(
+                    text: vm.pairingMessage,
+                    isError: vm.isPairingMessageError,
+                  )
+                : null,
+          ),
+          ..._apps(context, vm),
+        ],
+      ],
+    );
+  }
+
+  List<Widget> _apps(BuildContext context, SettingsViewModel vm) {
+    final PairingStatus? status = vm.pairing;
+    if (status == null) {
+      return <Widget>[
+        SettingsBlock(
+          child: Text('No iPhone selected.', style: context.t.smallMuted),
+        ),
+      ];
+    }
+    if (!status.deviceReachable) {
+      return <Widget>[
+        SettingsBlock(
+          child: Text(
+            status.deviceError ?? 'Installed apps could not be listed.',
+            style: context.t.smallMuted,
+          ),
+        ),
+      ];
+    }
+    if (status.consumers.isEmpty) {
+      return <Widget>[
+        SettingsBlock(
+          child: Text(
+            'No supported apps are installed. Sideload EscapeOS, SideStore, '
+            'AltStore, LiveContainer, or StikDebug first.',
+            style: context.t.smallMuted,
+          ),
+        ),
+      ];
+    }
+    return <Widget>[
+      for (final PairingConsumerInfo app in status.consumers)
+        SettingsRow(
+          title: app.label,
+          description: app.filename ?? app.bundleId,
+          control: AppButton(
+            label: 'Place',
+            compact: true,
+            busy: vm.isPairingBusy,
+            onPressed:
+                vm.canPlacePairing ? () => vm.placePairingOn(app) : null,
+          ),
+        ),
+    ];
   }
 }
 

@@ -12,6 +12,7 @@ import 'package:ipaside/services/file_picker.dart';
 import 'package:ipaside/services/settings_store.dart';
 import 'package:ipaside/ui/shell/app_dialogs.dart';
 import 'package:ipaside/ui/shell/nav_destination.dart';
+import 'package:ipaside/viewmodels/device_selection.dart';
 import 'package:ipaside/viewmodels/navigation_state.dart';
 import 'package:ipaside/viewmodels/settings_view_model.dart';
 
@@ -45,16 +46,21 @@ class _FakeRunner implements EngineCommandRunner {
     calls.add(args);
 
     final String key = args.join(' ');
-    final Object? failure = failures[key];
+    final String first = args.isEmpty ? '' : args.first;
+    final Object? failure = failures[key] ??
+        (first == 'pairing' ? failures[first] : null);
     if (failure != null) {
       throw failure;
     }
 
-    final List<EngineResult>? queue = queued[key];
+    final List<EngineResult>? queue = queued[key] ??
+        (first == 'pairing' ? queued[first] : null);
     if (queue != null && queue.isNotEmpty) {
       return queue.removeAt(0);
     }
-    return results[key] ?? _empty;
+    return results[key] ??
+        (first == 'pairing' ? results[first] : null) ??
+        _empty;
   }
 }
 
@@ -116,6 +122,11 @@ class _FakePicker implements FilePickerService {
 
   int folderPrompts = 0;
 
+  String? pairingToOpen;
+  String? pairingToSave;
+  int pairingOpenCount = 0;
+  int pairingSaveCount = 0;
+
   @override
   Future<String?> pickSignedFolder() async {
     folderPrompts++;
@@ -131,12 +142,16 @@ class _FakePicker implements FilePickerService {
       throw UnsupportedError('Settings never opens a tweak.');
 
   @override
-  Future<String?> pickPairingFile() async =>
-      throw UnsupportedError('Settings never opens a pairing file.');
+  Future<String?> pickPairingFile() async {
+    pairingOpenCount++;
+    return pairingToOpen;
+  }
 
   @override
-  Future<String?> savePairingFile({required String suggestedName}) async =>
-      throw UnsupportedError('Settings never exports a pairing file.');
+  Future<String?> savePairingFile({required String suggestedName}) async {
+    pairingSaveCount++;
+    return pairingToSave;
+  }
 }
 
 /// A dialog stand-in: answers [confirm] without a navigator.
@@ -196,6 +211,7 @@ void main() {
   late Directory temp;
   late SettingsStore settings;
   SettingsViewModel? viewModel;
+  DeviceSelection? devices;
 
   setUp(() {
     runner = _FakeRunner();
@@ -211,10 +227,14 @@ void main() {
     final SettingsViewModel? model = viewModel;
     viewModel = null;
     if (model != null && !model.isDisposed) model.dispose();
+    final DeviceSelection? selection = devices;
+    devices = null;
+    if (selection != null && !selection.isDisposed) selection.dispose();
     temp.deleteSync(recursive: true);
   });
 
   Future<SettingsViewModel> load() async {
+    devices = DeviceSelection(engine: EngineApi(runner), settings: settings);
     final SettingsViewModel model = SettingsViewModel(
       engine: EngineApi(runner),
       navigation: navigation,
@@ -222,6 +242,7 @@ void main() {
       settings: settings,
       picker: picker,
       dialogs: dialogs,
+      devices: devices!,
     );
     viewModel = model;
     await _settle();
@@ -562,6 +583,7 @@ void main() {
         directory: chosenFolder,
       );
 
+      devices = DeviceSelection(engine: EngineApi(runner), settings: settings);
       final SettingsViewModel model = SettingsViewModel(
         engine: EngineApi(runner),
         navigation: navigation,
@@ -569,6 +591,7 @@ void main() {
         settings: settings,
         picker: picker,
         dialogs: dialogs,
+        devices: devices!,
       );
       viewModel = model;
 
@@ -920,4 +943,276 @@ void main() {
       expect(SettingsViewModel.describeFileCount(2), '2 files');
     });
   });
+
+  group('SettingsViewModel pairing', () {
+    const String udid = '935cbbb9b82d25d15566e5939bcea5677b1c44ae';
+
+    Map<String, dynamic> pairingPayload({
+      String source = 'lockdown',
+      bool hasLockdown = true,
+      bool hasRppairing = false,
+      bool reachable = true,
+      List<Map<String, dynamic>> consumers = const <Map<String, dynamic>>[],
+    }) =>
+        <String, dynamic>{
+          'udid': udid,
+          'source': source,
+          'has_lockdown': hasLockdown,
+          'has_rppairing': hasRppairing,
+          'imported': source == 'imported',
+          'device_reachable': reachable,
+          'consumers': consumers,
+          'note': hasRppairing ? 'has remote pairing' : 'needs remote pairing',
+        };
+
+    void withPhone() {
+      runner.results['devices'] = EngineResult(
+        ok: true,
+        data: <dynamic>[
+          <String, dynamic>{'serial': udid, 'connection_type': 'USB'},
+        ],
+      );
+    }
+
+    test('loads the pairing file for the selected device', () async {
+      withPhone();
+      runner.results['pairing'] = EngineResult(
+        ok: true,
+        data: pairingPayload(),
+      );
+
+      final SettingsViewModel model = await load();
+
+      expect(model.isPairingLoading, isFalse);
+      expect(model.hasPairingPayload, isTrue);
+      expect(model.pairingUsbText, 'Present');
+      expect(model.pairingRemoteText, 'Missing');
+      expect(
+        runner.calls.any(
+          (List<String> call) =>
+              call.length >= 3 &&
+              call[0] == 'pairing' &&
+              call[1] == '--udid' &&
+              call[2] == udid,
+        ),
+        isTrue,
+      );
+    });
+
+    test('import stores the picked file and reloads status', () async {
+      withPhone();
+      picker.pairingToOpen = r'C:\Users\me\Downloads\pairingFile.plist';
+      runner.results['pairing'] = EngineResult(
+        ok: true,
+        data: pairingPayload(),
+      );
+      final SettingsViewModel model = await load();
+      runner.queued['pairing'] = <EngineResult>[
+        const EngineResult(
+          ok: true,
+          data: <String, dynamic>{
+            'imported': true,
+            'has_rppairing': true,
+            'path': r'C:\data\pairing.plist',
+          },
+        ),
+      ];
+      runner.results['pairing'] = EngineResult(
+        ok: true,
+        data: pairingPayload(source: 'imported', hasRppairing: true),
+      );
+
+      await model.importPairing();
+
+      expect(picker.pairingOpenCount, 1);
+      expect(
+        runner.ran(<String>[
+          'pairing',
+          '--import',
+          r'C:\Users\me\Downloads\pairingFile.plist',
+          '--udid',
+          udid,
+        ]),
+        isTrue,
+      );
+      expect(model.pairing?.hasRppairing, isTrue);
+      expect(model.pairingMessage, contains('Imported'));
+      expect(model.isPairingMessageError, isFalse);
+    });
+
+    test('export writes to the path the save dialog returned', () async {
+      withPhone();
+      picker.pairingToSave = r'D:\pairingFile.plist';
+      runner.results['pairing'] = EngineResult(
+        ok: true,
+        data: pairingPayload(hasRppairing: true),
+      );
+      final SettingsViewModel model = await load();
+      runner.queued['pairing'] = <EngineResult>[
+        const EngineResult(
+          ok: true,
+          data: <String, dynamic>{
+            'exported': true,
+            'path': r'D:\pairingFile.plist',
+            'bytes': 12,
+            'has_rppairing': true,
+          },
+        ),
+      ];
+
+      await model.exportPairing();
+
+      expect(picker.pairingSaveCount, 1);
+      expect(
+        runner.calls.any(
+          (List<String> call) =>
+              call.contains('--export') &&
+              call.contains(r'D:\pairingFile.plist'),
+        ),
+        isTrue,
+      );
+      expect(model.pairingMessage, contains('Wrote'));
+    });
+
+    test('place creates Remote Pairing keys then writes when they were missing',
+        () async {
+      withPhone();
+      runner.results['pairing'] = EngineResult(
+        ok: true,
+        data: pairingPayload(
+          consumers: <Map<String, dynamic>>[
+            <String, dynamic>{
+              'id': 'escapeos',
+              'name': 'EscapeOS',
+              'bundle_id': 'com.ipaside.escapeos.TEAM',
+              'needs_rppairing': true,
+            },
+          ],
+        ),
+      );
+      final SettingsViewModel model = await load();
+      runner.queued['pairing'] = <EngineResult>[
+        const EngineResult(
+          ok: true,
+          data: <String, dynamic>{
+            'created': true,
+            'has_rppairing': true,
+            'has_lockdown': true,
+          },
+        ),
+        const EngineResult(
+          ok: true,
+          data: <String, dynamic>{
+            'has_rppairing': true,
+            'supported_installed': 1,
+            'placed': <dynamic>[
+              <String, dynamic>{
+                'id': 'escapeos',
+                'name': 'EscapeOS',
+                'filename': 'pairingFile.plist',
+                'placed': true,
+              },
+            ],
+          },
+        ),
+      ];
+
+      await model.placePairing();
+
+      expect(
+        runner.calls.any(
+          (List<String> call) =>
+              call.first == 'pairing' && call.contains('--create'),
+        ),
+        isTrue,
+      );
+      expect(
+        runner.calls.any(
+          (List<String> call) =>
+              call.first == 'pairing' && call.contains('--deliver'),
+        ),
+        isTrue,
+      );
+      expect(model.pairingMessage, contains('EscapeOS'));
+      expect(model.isPairingMessageError, isFalse);
+    });
+
+    test('place does not write when Remote Pairing create fails', () async {
+      withPhone();
+      runner.results['pairing'] = EngineResult(
+        ok: true,
+        data: pairingPayload(
+          consumers: <Map<String, dynamic>>[
+            <String, dynamic>{
+              'id': 'escapeos',
+              'name': 'EscapeOS',
+              'bundle_id': 'com.ipaside.escapeos.TEAM',
+              'needs_rppairing': true,
+            },
+          ],
+        ),
+      );
+      final SettingsViewModel model = await load();
+
+      await model.placePairing();
+
+      expect(model.isPairingMessageError, isTrue);
+      expect(
+        runner.calls.where(
+          (List<String> call) =>
+              call.first == 'pairing' && call.contains('--deliver'),
+        ),
+        isEmpty,
+      );
+    });
+
+    test('place on one app forwards --app', () async {
+      withPhone();
+      runner.results['pairing'] = EngineResult(
+        ok: true,
+        data: pairingPayload(
+          hasRppairing: true,
+          consumers: <Map<String, dynamic>>[
+            <String, dynamic>{
+              'id': 'escapeos',
+              'name': 'EscapeOS',
+              'app_name': 'EscapeOS',
+              'bundle_id': 'com.ipaside.escapeos.TEAM',
+              'filename': 'pairingFile.plist',
+              'needs_rppairing': true,
+            },
+          ],
+        ),
+      );
+      final SettingsViewModel model = await load();
+      runner.queued['pairing'] = <EngineResult>[
+        const EngineResult(
+          ok: true,
+          data: <String, dynamic>{
+            'has_rppairing': true,
+            'placed': <dynamic>[
+              <String, dynamic>{
+                'name': 'EscapeOS',
+                'filename': 'pairingFile.plist',
+                'placed': true,
+              },
+            ],
+          },
+        ),
+      ];
+
+      await model.placePairingOn(model.pairing!.consumers.single);
+
+      expect(
+        runner.calls.any(
+          (List<String> call) =>
+              call.contains('--deliver') &&
+              call.contains('--app') &&
+              call.contains('com.ipaside.escapeos.TEAM'),
+        ),
+        isTrue,
+      );
+    });
+  });
 }
+
