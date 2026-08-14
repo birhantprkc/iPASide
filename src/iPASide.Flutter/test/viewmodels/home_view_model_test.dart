@@ -1,9 +1,12 @@
 import 'dart:async';
 import 'dart:collection';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ipaside/engine/engine.dart';
+import 'package:ipaside/services/file_picker.dart';
 import 'package:ipaside/services/settings_store.dart';
+import 'package:ipaside/ui/shell/app_dialogs.dart';
 import 'package:ipaside/viewmodels/device_selection.dart';
 import 'package:ipaside/viewmodels/home_view_model.dart';
 import 'package:ipaside/viewmodels/navigation_state.dart';
@@ -67,6 +70,59 @@ class _FakeSettings extends SettingsStore {
   void saveConnection(String value) => connection = value;
 }
 
+class _FakePicker implements FilePickerService {
+  String? pairingToOpen;
+  String? pairingToSave;
+  int openCount = 0;
+  int saveCount = 0;
+
+  @override
+  Future<String?> pickIpa() async => null;
+
+  @override
+  Future<List<String>> pickTweaks() async => const <String>[];
+
+  @override
+  Future<String?> pickSignedFolder() async => null;
+
+  @override
+  Future<String?> pickPairingFile() async {
+    openCount++;
+    return pairingToOpen;
+  }
+
+  @override
+  Future<String?> savePairingFile({required String suggestedName}) async {
+    saveCount++;
+    return pairingToSave;
+  }
+}
+
+class _FakeDialogs extends DialogService {
+  _FakeDialogs() : super(GlobalKey<NavigatorState>());
+
+  bool confirmAnswer = true;
+  final List<String> alerts = <String>[];
+  final List<String> confirms = <String>[];
+
+  @override
+  Future<void> alert({required String title, required String message}) async {
+    alerts.add('$title|$message');
+  }
+
+  @override
+  Future<bool> confirm({
+    required String title,
+    required String message,
+    String confirmLabel = 'OK',
+    String cancelLabel = 'Cancel',
+    bool danger = false,
+  }) async {
+    confirms.add(title);
+    return confirmAnswer;
+  }
+}
+
 EngineResult _ok(Object data) => EngineResult(ok: true, data: data);
 
 const String _plus = '935cbbb9b82d25d15566e5939bcea5677b1c44ae';
@@ -111,11 +167,18 @@ Future<DeviceSelection> _twoDevices({String connection = 'auto'}) async {
   return selection;
 }
 
-Future<HomeViewModel> _home(_FakeRunner runner, DeviceSelection devices) async {
+Future<HomeViewModel> _home(
+  _FakeRunner runner,
+  DeviceSelection devices, {
+  FilePickerService? picker,
+  DialogService? dialogs,
+}) async {
   final HomeViewModel vm = HomeViewModel(
     engine: EngineApi(runner),
     navigation: NavigationState(),
     devices: devices,
+    picker: picker ?? _FakePicker(),
+    dialogs: dialogs ?? _FakeDialogs(),
   );
   addTearDown(vm.dispose);
   await pumpEventQueue();
@@ -429,6 +492,8 @@ void main() {
         engine: EngineApi(runner),
         navigation: NavigationState(),
         devices: devices,
+        picker: _FakePicker(),
+        dialogs: _FakeDialogs(),
       );
       await pumpEventQueue();
       final int before = runner.calls.length;
@@ -450,6 +515,258 @@ void main() {
       expect(HomeViewModel.shortId('ABCD'), 'ABCD');
       expect(HomeViewModel.shortId(null), '');
       expect(HomeViewModel.shortId(''), '');
+    });
+  });
+
+  group('HomeViewModel pairing card', () {
+    Map<String, dynamic> _pairing({
+      String source = 'lockdown',
+      bool hasLockdown = true,
+      bool hasRppairing = false,
+      bool reachable = true,
+      List<Map<String, dynamic>> consumers = const <Map<String, dynamic>>[],
+    }) =>
+        <String, dynamic>{
+          'udid': _plus,
+          'source': source,
+          'has_lockdown': hasLockdown,
+          'has_rppairing': hasRppairing,
+          'imported': source == 'imported',
+          'device_reachable': reachable,
+          'consumers': consumers,
+          'note': hasRppairing
+              ? 'has remote pairing'
+              : 'needs remote pairing',
+        };
+
+    test('loads the pairing file for the selected device', () async {
+      final _FakeRunner runner = _FakeRunner()
+        ..always('device-info', _ok(_identity(
+          name: 'A phone',
+          model: 'iPhone10,2',
+          udid: _plus,
+        )))
+        ..always('pairing', _ok(_pairing()));
+
+      final HomeViewModel vm = await _home(runner, await _twoDevices());
+
+      expect(vm.isPairingLoading, isFalse);
+      expect(vm.hasPairingPayload, isTrue);
+      expect(vm.pairing?.hasLockdown, isTrue);
+      expect(vm.pairing?.hasRppairing, isFalse);
+      expect(runner.callsTo('pairing').single, <String>[
+        'pairing',
+        '--udid',
+        _plus,
+      ]);
+    });
+
+    test('retargeting reloads pairing for the new phone', () async {
+      final _FakeRunner runner = _FakeRunner()
+        ..always('device-info', _ok(_identity(
+          name: 'A phone',
+          model: 'iPhone10,2',
+          udid: _plus,
+        )))
+        ..next('pairing', _ok(_pairing()))
+        ..next(
+          'pairing',
+          _ok(_pairing(source: 'imported', hasRppairing: true)),
+        );
+
+      final DeviceSelection devices = await _twoDevices();
+      final HomeViewModel vm = await _home(runner, devices);
+      expect(vm.pairing?.hasRppairing, isFalse);
+
+      devices.select(_other);
+      await pumpEventQueue();
+
+      expect(vm.pairing?.hasRppairing, isTrue);
+      expect(runner.callsTo('pairing').last, <String>[
+        'pairing',
+        '--udid',
+        _other,
+      ]);
+    });
+
+    test('import stores the picked file and reloads status', () async {
+      final _FakePicker picker = _FakePicker()
+        ..pairingToOpen = r'C:\Users\me\Downloads\pairingFile.plist';
+      final _FakeDialogs dialogs = _FakeDialogs();
+      final _FakeRunner runner = _FakeRunner()
+        ..always('device-info', _ok(_identity(
+          name: 'A phone',
+          model: 'iPhone10,2',
+          udid: _plus,
+        )))
+        ..next('pairing', _ok(_pairing()))
+        ..next(
+          'pairing',
+          _ok(<String, dynamic>{
+            'imported': true,
+            'has_rppairing': true,
+            'path': r'C:\data\pairing.plist',
+          }),
+        )
+        ..next(
+          'pairing',
+          _ok(_pairing(source: 'imported', hasRppairing: true)),
+        );
+
+      final HomeViewModel vm = await _home(
+        runner,
+        await _twoDevices(),
+        picker: picker,
+        dialogs: dialogs,
+      );
+      await vm.importPairing();
+
+      expect(picker.openCount, 1);
+      expect(runner.callsTo('pairing')[1], <String>[
+        'pairing',
+        '--import',
+        r'C:\Users\me\Downloads\pairingFile.plist',
+        '--udid',
+        _plus,
+      ]);
+      expect(vm.pairing?.hasRppairing, isTrue);
+      expect(dialogs.alerts.single, contains('Pairing file imported'));
+    });
+
+    test('export writes to the path the save dialog returned', () async {
+      final _FakePicker picker = _FakePicker()
+        ..pairingToSave = r'D:\pairingFile.plist';
+      final _FakeDialogs dialogs = _FakeDialogs();
+      final _FakeRunner runner = _FakeRunner()
+        ..always('device-info', _ok(_identity(
+          name: 'A phone',
+          model: 'iPhone10,2',
+          udid: _plus,
+        )))
+        ..next('pairing', _ok(_pairing(hasRppairing: true)))
+        ..next(
+          'pairing',
+          _ok(<String, dynamic>{
+            'exported': true,
+            'path': r'D:\pairingFile.plist',
+            'bytes': 12,
+            'has_rppairing': true,
+          }),
+        );
+
+      final HomeViewModel vm = await _home(
+        runner,
+        await _twoDevices(),
+        picker: picker,
+        dialogs: dialogs,
+      );
+      await vm.exportPairing();
+
+      expect(picker.saveCount, 1);
+      expect(
+        runner.callsTo('pairing').any(
+          (List<String> argv) =>
+              argv.contains('--export') &&
+              argv.contains(r'D:\pairingFile.plist'),
+        ),
+        isTrue,
+      );
+      expect(dialogs.alerts.single, contains('Pairing file exported'));
+    });
+
+    test('place asks before writing a lockdown-only file to EscapeOS', () async {
+      final _FakeDialogs dialogs = _FakeDialogs()..confirmAnswer = false;
+      final _FakeRunner runner = _FakeRunner()
+        ..always('device-info', _ok(_identity(
+          name: 'A phone',
+          model: 'iPhone10,2',
+          udid: _plus,
+        )))
+        ..always(
+          'pairing',
+          _ok(_pairing(
+            consumers: <Map<String, dynamic>>[
+              <String, dynamic>{
+                'id': 'escapeos',
+                'name': 'EscapeOS',
+                'bundle_id': 'com.ipaside.escapeos.TEAM',
+                'needs_rppairing': true,
+              },
+            ],
+          )),
+        );
+
+      final HomeViewModel vm = await _home(
+        runner,
+        await _twoDevices(),
+        dialogs: dialogs,
+      );
+      await vm.placePairing();
+
+      expect(dialogs.confirms, isNotEmpty);
+      expect(
+        runner.callsTo('pairing').where(
+          (List<String> argv) => argv.contains('--deliver'),
+        ),
+        isEmpty,
+        reason: 'cancelling the warning must not write the file',
+      );
+    });
+
+    test('place writes into every supported app when confirmed', () async {
+      final _FakeDialogs dialogs = _FakeDialogs();
+      final _FakeRunner runner = _FakeRunner()
+        ..always('device-info', _ok(_identity(
+          name: 'A phone',
+          model: 'iPhone10,2',
+          udid: _plus,
+        )))
+        ..always(
+          'pairing',
+          _ok(_pairing(
+            hasRppairing: true,
+            consumers: <Map<String, dynamic>>[
+              <String, dynamic>{
+                'id': 'escapeos',
+                'name': 'EscapeOS',
+                'app_name': 'EscapeOS',
+                'bundle_id': 'com.ipaside.escapeos.TEAM',
+                'filename': 'pairingFile.plist',
+                'needs_rppairing': true,
+              },
+            ],
+          )),
+        );
+
+      final HomeViewModel vm = await _home(
+        runner,
+        await _twoDevices(),
+        dialogs: dialogs,
+      );
+      runner.next(
+        'pairing',
+        _ok(<String, dynamic>{
+          'has_rppairing': true,
+          'supported_installed': 1,
+          'placed': <dynamic>[
+            <String, dynamic>{
+              'id': 'escapeos',
+              'name': 'EscapeOS',
+              'filename': 'pairingFile.plist',
+              'placed': true,
+            },
+          ],
+        }),
+      );
+      await vm.placePairing();
+
+      expect(
+        runner.callsTo('pairing').any(
+          (List<String> argv) => argv.contains('--deliver'),
+        ),
+        isTrue,
+      );
+      expect(dialogs.alerts.single, contains('Pairing file placed'));
     });
   });
 }

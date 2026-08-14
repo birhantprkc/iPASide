@@ -4,6 +4,18 @@ All notable changes to iPASide are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.2.2] - 2026-08-14
+
+### Added
+
+- **Pairing file on Home.** Import an iLoader (or other) pairing plist, export
+  this PC's record as XML, and place it into every supported app installed on
+  the phone — EscapeOS, SideStore, AltStore, LiveContainer, and StikDebug —
+  under the filename each app looks for. Sideloading EscapeOS places the file
+  automatically. The card reports USB pairing keys and Remote Pairing keys
+  separately, because iOS 26.4+ EscapeOS and StikDebug need the Remote Pairing
+  half that Windows Lockdown alone does not write.
+
 ## [1.2.1] - 2026-08-13
 
 ### Fixed

@@ -413,3 +413,49 @@ def test_clean_on_a_folder_that_does_not_exist_reports_nothing_removed(tmp_path)
 
     assert result["removed"] == 0
     assert result["bytes_freed"] == 0
+
+
+def test_sideload_places_a_pairing_file_into_escapeos(sideload_harness, monkeypatch):
+    run, _signer, _signed_dir = sideload_harness
+    monkeypatch.setattr(
+        sideload.ipa_module,
+        "inspect",
+        lambda _p: {"bundle_id": "com.ipaside.escapeos", "display_name": "EscapeOS"},
+    )
+    seen: dict = {}
+
+    def fake_deliver(bundle_id, udid, serial, *, skip_ids=()):
+        seen.update(bundle_id=bundle_id, udid=udid, skip_ids=set(skip_ids))
+        return {"placed": True, "id": "escapeos", "bundle_id": bundle_id}
+
+    monkeypatch.setattr(
+        "ipaside_engine.pairing.deliver_if_consumer", fake_deliver
+    )
+
+    result = run(lambda *_a, **_k: None)
+
+    assert result["status"] == "installed"
+    assert result["post_install"]["pairing"]["placed"] is True
+    assert seen["bundle_id"].startswith("com.ipaside.escapeos")
+    assert "livecontainer" in seen["skip_ids"]
+
+
+def test_sideload_does_not_fail_when_pairing_placement_cannot_run(
+    sideload_harness, monkeypatch
+):
+    run, _signer, _signed_dir = sideload_harness
+    monkeypatch.setattr(
+        sideload.ipa_module,
+        "inspect",
+        lambda _p: {"bundle_id": "com.ipaside.escapeos", "display_name": "EscapeOS"},
+    )
+    monkeypatch.setattr(
+        "ipaside_engine.pairing.deliver_if_consumer",
+        lambda *_a, **_k: {"placed": False, "error": "no pairing record"},
+    )
+
+    result = run(lambda *_a, **_k: None)
+
+    assert result["status"] == "installed"
+    assert result["post_install"]["pairing"]["placed"] is False
+

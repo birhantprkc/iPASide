@@ -105,6 +105,44 @@ class EngineApi {
         bundleId,
       ]);
 
+  // ---- Pairing file ------------------------------------------------------ //
+
+  /// What this PC holds for the target device, and which installed apps can use it.
+  Future<PairingStatus> pairingStatus({String? udid, String? connection}) =>
+      _runTyped<PairingStatus>(
+        <String>['pairing', ..._targetArgs(udid, connection)],
+        _asObject(PairingStatus.fromJson),
+      );
+
+  /// Writes the pairing file to [path] as an XML plist.
+  Future<PairingExport> exportPairing(
+    String path, {
+    String? udid,
+    String? connection,
+  }) =>
+      _runTyped<PairingExport>(
+        <String>['pairing', '--export', path, ..._targetArgs(udid, connection)],
+        _asObject(PairingExport.fromJson),
+      );
+
+  /// Stores [path] as this PC's pairing file for the target device.
+  Future<PairingImport> importPairing(
+    String path, {
+    String? udid,
+    String? connection,
+  }) =>
+      _runTyped<PairingImport>(
+        <String>['pairing', '--import', path, ..._targetArgs(udid, connection)],
+        _asObject(PairingImport.fromJson),
+      );
+
+  /// Writes the pairing file into every supported app installed on the device.
+  Future<PairingDelivery> deliverPairing({String? udid, String? connection}) =>
+      _runTyped<PairingDelivery>(
+        <String>['pairing', '--deliver', ..._targetArgs(udid, connection)],
+        _asObject(PairingDelivery.fromJson),
+      );
+
   // ---- Jailbreak --------------------------------------------------------- //
 
   /// Whether Dopamine fits the connected device, worked out from its chip + iOS.

@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../engine/engine.dart';
+import '../../services/file_picker.dart';
 import '../../viewmodels/account_selection.dart';
 import '../../viewmodels/apple_support_view_model.dart';
 import '../../viewmodels/device_selection.dart';
 import '../../viewmodels/home_view_model.dart';
 import '../../viewmodels/navigation_state.dart';
+import '../shell/app_dialogs.dart';
 import '../shell/logo_mark.dart';
 import '../theme/app_theme.dart';
 import '../widgets/apple_support_banner.dart';
@@ -15,7 +17,7 @@ import '../widgets/progress.dart';
 import '../widgets/smooth_scroll.dart';
 import '../widgets/surfaces.dart';
 
-/// Home: hero, three status cards, quick actions.
+/// Home: hero, status cards, pairing file, quick actions.
 class HomeView extends StatelessWidget {
   const HomeView({super.key});
 
@@ -25,6 +27,8 @@ class HomeView extends StatelessWidget {
           engine: ctx.read<EngineApi>(),
           navigation: ctx.read<NavigationState>(),
           devices: ctx.read<DeviceSelection>(),
+          picker: ctx.read<FilePickerService>(),
+          dialogs: ctx.read<DialogService>(),
         ),
         child: const _HomeBody(),
       );
@@ -72,7 +76,11 @@ class _HomeBody extends StatelessWidget {
             ),
           ),
           const SizedBox(height: Space.s6),
-          const Entrance(index: 5, child: SectionLabel('QUICK ACTIONS')),
+          const Entrance(index: 5, child: SectionLabel('PAIRING FILE')),
+          const SizedBox(height: Space.s3),
+          Entrance(index: 6, child: _PairingCard(vm: vm)),
+          const SizedBox(height: Space.s6),
+          const Entrance(index: 7, child: SectionLabel('QUICK ACTIONS')),
           const SizedBox(height: Space.s3),
           IntrinsicHeight(
             child: Row(
@@ -80,7 +88,7 @@ class _HomeBody extends StatelessWidget {
               children: [
                 Expanded(
                   child: Entrance(
-                    index: 6,
+                    index: 8,
                     child: ActionTile(
                       icon: Icons.collections_bookmark_outlined,
                       title: 'Library',
@@ -92,7 +100,7 @@ class _HomeBody extends StatelessWidget {
                 const SizedBox(width: Space.s4),
                 Expanded(
                   child: Entrance(
-                    index: 7,
+                    index: 9,
                     child: ActionTile(
                       icon: Icons.grid_view_rounded,
                       title: 'Apps',
@@ -104,7 +112,7 @@ class _HomeBody extends StatelessWidget {
                 const SizedBox(width: Space.s4),
                 Expanded(
                   child: Entrance(
-                    index: 8,
+                    index: 10,
                     child: ActionTile(
                       icon: Icons.monitor_heart_outlined,
                       title: 'Diagnostics',
@@ -445,4 +453,138 @@ class _LinkRow extends StatelessWidget {
           ],
         ),
       );
+}
+
+/// PAIRING FILE: this PC's record for the selected phone, and the apps that need it.
+///
+/// Full width under STATUS rather than a fourth column: three status cards are
+/// already a row, and pairing has a paragraph of explanation plus three actions
+/// that would not fit in a column without truncating the sentence that makes
+/// the card honest about iOS 26.
+class _PairingCard extends StatelessWidget {
+  const _PairingCard({required this.vm});
+
+  final HomeViewModel vm;
+
+  @override
+  Widget build(BuildContext context) {
+    return AppCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'A pairing file is this PC\u2019s trusted identity with your iPhone. '
+            'SideStore, AltStore, LiveContainer, EscapeOS, and StikDebug each look '
+            'for it in their Documents folder. iPASide can export it, import an '
+            'iLoader file that includes Remote Pairing keys, and place it in every '
+            'supported app that is installed.',
+            style: context.t.bodyMuted,
+          ),
+          const SizedBox(height: Space.s4),
+          ..._body(context),
+          const SizedBox(height: Space.s5),
+          Wrap(
+            spacing: Space.s2,
+            runSpacing: Space.s2,
+            children: [
+              AppButton(
+                label: 'Import',
+                icon: Icons.file_open_outlined,
+                compact: true,
+                busy: vm.isPairingBusy,
+                onPressed: vm.canImportPairing ? vm.importPairing : null,
+              ),
+              AppButton(
+                label: 'Export',
+                icon: Icons.save_alt_outlined,
+                compact: true,
+                busy: vm.isPairingBusy,
+                onPressed: vm.canExportPairing ? vm.exportPairing : null,
+              ),
+              AppButton(
+                label: 'Place on device',
+                icon: Icons.phonelink_setup_outlined,
+                tone: ButtonTone.primary,
+                compact: true,
+                busy: vm.isPairingBusy,
+                onPressed: vm.canPlacePairing ? vm.placePairing : null,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> _body(BuildContext context) {
+    if (vm.isPairingLoading) {
+      return const <Widget>[LoadingLine(label: 'Reading pairing file\u2026')];
+    }
+    if (vm.hasPairingError) {
+      return <Widget>[Text(vm.pairingError!, style: context.t.bodyMuted)];
+    }
+    final PairingStatus? status = vm.pairing;
+    if (status == null) {
+      return <Widget>[
+        Text(
+          'Connect an iPhone to manage its pairing file.',
+          style: context.t.bodyMuted,
+        ),
+      ];
+    }
+
+    return <Widget>[
+      Wrap(
+        spacing: Space.s2,
+        runSpacing: Space.s2,
+        children: [
+          Pill(
+            label: status.hasLockdown ? 'USB pairing' : 'No USB pairing',
+            kind: status.hasLockdown ? PillKind.ok : PillKind.danger,
+            icon: status.hasLockdown
+                ? Icons.check_rounded
+                : Icons.close_rounded,
+          ),
+          Pill(
+            label: status.hasRppairing
+                ? 'Remote Pairing'
+                : 'No Remote Pairing',
+            kind: status.hasRppairing ? PillKind.ok : PillKind.warn,
+            icon: status.hasRppairing
+                ? Icons.check_rounded
+                : Icons.warning_amber_rounded,
+          ),
+          if (status.imported)
+            const Pill(
+              label: 'Imported',
+              kind: PillKind.ok,
+              icon: Icons.file_download_outlined,
+            ),
+        ],
+      ),
+      const SizedBox(height: Space.s3),
+      if (status.note != null)
+        Text(status.note!, style: context.t.bodyMuted)
+      else if (status.error != null)
+        Text(status.error!, style: context.t.bodyMuted),
+      const SizedBox(height: Space.s3),
+      Text(_consumerLine(status), style: context.t.smallMuted),
+    ];
+  }
+
+  static String _consumerLine(PairingStatus status) {
+    if (!status.deviceReachable) {
+      final String reason = status.deviceError ?? 'the device could not be listed';
+      return 'Installed apps were not listed ($reason).';
+    }
+    if (status.consumers.isEmpty) {
+      return 'No supported apps are installed. Sideload EscapeOS, SideStore, '
+          'AltStore, LiveContainer, or StikDebug, then place the file.';
+    }
+    final String names = status.consumers
+        .map((PairingConsumerInfo c) => c.label)
+        .join(', ');
+    return '${status.consumers.length} supported app${status.consumers.length == 1 ? '' : 's'} '
+        'installed: $names.';
+  }
 }

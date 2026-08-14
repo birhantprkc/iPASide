@@ -182,6 +182,22 @@ void main() {
 
       expect(WindowsFileDialog.folderOptions(once), once);
     });
+
+    test('a save dialog asks the folder to exist, and the file not to', () {
+      final FILEOPENDIALOGOPTIONS options = WindowsFileDialog.saveOptions(
+        shellDefaults,
+      );
+
+      expect(options.has(FOS_PATHMUSTEXIST), isTrue);
+      expect(options.has(FOS_FORCEFILESYSTEM), isTrue);
+      expect(options.has(FOS_OVERWRITEPROMPT), isTrue);
+      expect(
+        options.has(FOS_FILEMUSTEXIST),
+        isFalse,
+        reason: 'Save is how a file that does not exist yet is created',
+      );
+      expect(options.has(FOS_PICKFOLDERS), isFalse);
+    });
   });
 
   group('decodeDisplayName', () {

@@ -228,6 +228,24 @@ def _profile_post_install(name: str, udid: str, ipa_path: str) -> dict[str, Any]
     return outcome
 
 
+def _deliver_pairing_if_needed(bundle_id: str, udid: str) -> dict[str, Any] | None:
+    """Place this PC's pairing file after a sideload that landed a consumer.
+
+    Never raises. The app is already installed; a missing pairing record or a
+    House Arrest failure is reported beside the install, not as an undone one.
+    LiveContainer is left to :func:`_profile_post_install`, which also knows
+    whether that build carries SideStore.
+    """
+    from . import pairing as pairing_mod
+
+    return pairing_mod.deliver_if_consumer(
+        bundle_id,
+        udid,
+        udid,
+        skip_ids=frozenset({"livecontainer"}),
+    )
+
+
 def _as_signed_dir(directory: str | None) -> Path:
     """The folder signed IPAs live in: the caller's choice, or the app's own.
 
@@ -429,6 +447,13 @@ def run_sideload(
         if profile:
             progress("finalize", None, "Finishing setup\u2026")
             post_install = _profile_post_install(profile, udid, ipa_path)
+
+        # EscapeOS, StikDebug, SideStore, AltStore. LiveContainer is skipped: its
+        # signing profile already delivers a pairing file, and only when the IPA
+        # actually carries SideStore.
+        pairing_placed = _deliver_pairing_if_needed(target_bundle_id, udid)
+        if pairing_placed is not None:
+            post_install = {**(post_install or {}), "pairing": pairing_placed}
     finally:
         # Scratch always goes, kept signed IPA or not: it is an unpacked copy of the
         # whole app, worth hundreds of MB, and nothing reads it after signing.

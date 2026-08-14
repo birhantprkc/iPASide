@@ -535,6 +535,80 @@ void main() {
       expect(info.uniqueDeviceId, '935cbbb9b82d25d15566e5939bcea5677b1c44ae');
     });
 
+    test('pairingStatus maps the pairing payload', () async {
+      final _FakeRunner runner = _FakeRunner(
+        result: const EngineResult(
+          ok: true,
+          data: <String, dynamic>{
+            'udid': '00008150-001479110E20401C',
+            'source': 'imported',
+            'has_lockdown': true,
+            'has_rppairing': true,
+            'consumers': <dynamic>[
+              <String, dynamic>{
+                'id': 'escapeos',
+                'name': 'EscapeOS',
+                'bundle_id': 'com.ipaside.escapeos.TEAM',
+                'needs_rppairing': true,
+              },
+            ],
+          },
+        ),
+      );
+
+      final PairingStatus status = await EngineApi(runner).pairingStatus(
+        udid: '00008150-001479110E20401C',
+      );
+
+      expect(runner.lastArgs, <String>[
+        'pairing',
+        '--udid',
+        '00008150-001479110E20401C',
+      ]);
+      expect(status.source, 'imported');
+      expect(status.hasRppairing, isTrue);
+      expect(status.consumers.single.id, 'escapeos');
+    });
+
+    test('exportPairing, importPairing and deliverPairing forward flags',
+        () async {
+      final _FakeRunner runner = _FakeRunner(
+        result: const EngineResult(
+          ok: true,
+          data: <String, dynamic>{
+            'exported': true,
+            'path': r'D:\pairingFile.plist',
+            'imported': true,
+            'placed': <dynamic>[],
+          },
+        ),
+      );
+      final EngineApi api = EngineApi(runner);
+
+      await api.exportPairing(r'D:\pairingFile.plist', udid: 'U');
+      expect(runner.lastArgs, <String>[
+        'pairing',
+        '--export',
+        r'D:\pairingFile.plist',
+        '--udid',
+        'U',
+      ]);
+
+      await api.importPairing(r'C:\in.plist', udid: 'U', connection: 'usb');
+      expect(runner.lastArgs, <String>[
+        'pairing',
+        '--import',
+        r'C:\in.plist',
+        '--udid',
+        'U',
+        '--connection',
+        'usb',
+      ]);
+
+      await api.deliverPairing(udid: 'U');
+      expect(runner.lastArgs, <String>['pairing', '--deliver', '--udid', 'U']);
+    });
+
     test('apps maps the bundle-id keyed dict', () async {
       final _FakeRunner runner = _FakeRunner(
         result: const EngineResult(

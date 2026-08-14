@@ -1,10 +1,13 @@
 import '../engine/engine.dart';
+import '../services/file_picker.dart';
+import '../ui/shell/app_dialogs.dart';
 import '../ui/shell/nav_destination.dart';
 import 'base_view_model.dart';
 import 'device_selection.dart';
 import 'navigation_state.dart';
 
-/// Home: three cards describing the phone an install would go to.
+/// Home: three cards describing the phone an install would go to, plus the
+/// pairing file those cards' device needs.
 ///
 /// Device shows the lockdown identity from `device-info` (or the "no device"
 /// empty state), Apple ID shows the session from `login --status`, and
@@ -12,20 +15,29 @@ import 'navigation_state.dart';
 /// card owns its own spinner, cleaned error and empty state, so one failing
 /// engine call never blanks the screen.
 ///
-/// All three follow [DeviceSelection]. Retargeting from the sidebar reloads the
-/// device card and re-derives the connection card, because a card that keeps
-/// describing the phone that was selected when the screen opened is worse than
-/// no card: it reads as the state of the device the user just chose.
+/// Pairing is a fourth, full-width card: this PC's record for the selected
+/// phone, whether it has Remote Pairing keys, which installed apps can use it,
+/// and the import / export / place actions. It follows [DeviceSelection] the
+/// same way Device does, because a pairing card that keeps describing the phone
+/// that was selected when the screen opened is worse than no card.
+///
+/// All three status cards follow [DeviceSelection]. Retargeting from the sidebar
+/// reloads the device card and re-derives the connection card, because a card
+/// that keeps describing the phone that was selected when the screen opened is
+/// worse than no card: it reads as the state of the device the user just chose.
 class HomeViewModel extends BaseViewModel {
   HomeViewModel({
     required this._engine,
     required this._navigation,
     required this._devices,
+    required this._picker,
+    required this._dialogs,
   }) {
     _devices.addListener(_onSelectionChanged);
     // Independent loads: the account is not about a device and must not wait on one.
     _loadDevice();
     _loadAccount();
+    _loadPairing();
   }
 
   static const _dash = '\u2014';
@@ -33,6 +45,8 @@ class HomeViewModel extends BaseViewModel {
   final EngineApi _engine;
   final NavigationState _navigation;
   final DeviceSelection _devices;
+  final FilePickerService _picker;
+  final DialogService _dialogs;
 
   @override
   void dispose() {
@@ -97,6 +111,27 @@ class HomeViewModel extends BaseViewModel {
   bool get isConnectionEmpty =>
       _devices.hasLoaded && !_devices.hasError && _devices.selected == null;
 
+  // ---- Pairing file ----
+
+  bool _isPairingLoading = true;
+  String? _pairingError;
+  PairingStatus? _pairing;
+  bool _isPairingBusy = false;
+  int _pairingLoadToken = 0;
+
+  bool get isPairingLoading => _isPairingLoading;
+  String? get pairingError => _pairingError;
+  PairingStatus? get pairing => _pairing;
+  bool get isPairingBusy => _isPairingBusy;
+  bool get hasPairingError => _pairingError != null;
+  bool get hasPairingPayload => _pairing?.hasPayload ?? false;
+  bool get canExportPairing => hasPairingPayload && !_isPairingBusy;
+  bool get canImportPairing => !_isPairingBusy && _devices.selectedUdid != null;
+  bool get canPlacePairing =>
+      hasPairingPayload &&
+      !_isPairingBusy &&
+      (_pairing?.deviceReachable ?? false);
+
   /// `connected` / `available` for a transport the selected device is on, and an
   /// em dash for one it is not.
   String get usbText => _transportText('USB', 'connected');
@@ -129,6 +164,174 @@ class HomeViewModel extends BaseViewModel {
   void openLibrary() => _navigation.navigateTo(NavKey.library);
   void openApps() => _navigation.navigateTo(NavKey.apps);
   void openDiagnostics() => _navigation.navigateTo(NavKey.diagnostics);
+
+  Future<void> importPairing() async {
+    if (!canImportPairing) return;
+    final String? path = await _picker.pickPairingFile();
+    if (path == null || isDisposed) return;
+
+    _isPairingBusy = true;
+    notify();
+    try {
+      final PairingImport result = await _engine.importPairing(
+        path,
+        udid: _devices.selectedUdid,
+        connection: _devices.connectionArg,
+      );
+      if (isDisposed) return;
+      await _loadPairing();
+      if (isDisposed) return;
+      await _dialogs.alert(
+        title: 'Pairing file imported',
+        message: result.hasRppairing
+            ? 'This file includes Remote Pairing keys, so EscapeOS and StikDebug '
+                'can use it on iOS 26.4 and later. Place it on the device to copy '
+                'it into every supported app that is installed.'
+            : (result.note ??
+                'The pairing file was stored. Place it on the device to copy it '
+                    'into every supported app that is installed.'),
+      );
+    } on EngineShutdownException {
+      return;
+    } catch (error) {
+      if (!isDisposed) {
+        await _dialogs.alert(
+          title: 'Could not import pairing file',
+          message: BaseViewModel.errorText(error),
+        );
+      }
+    } finally {
+      if (!isDisposed) {
+        _isPairingBusy = false;
+        notify();
+      }
+    }
+  }
+
+  Future<void> exportPairing() async {
+    if (!canExportPairing) return;
+    final String? path = await _picker.savePairingFile(
+      suggestedName: 'pairingFile.plist',
+    );
+    if (path == null || isDisposed) return;
+
+    _isPairingBusy = true;
+    notify();
+    try {
+      final PairingExport result = await _engine.exportPairing(
+        path,
+        udid: _devices.selectedUdid,
+        connection: _devices.connectionArg,
+      );
+      if (isDisposed) return;
+      final String where = result.path ?? path;
+      final String completeness = result.hasRppairing
+          ? 'It includes Remote Pairing keys.'
+          : 'It has this PC\u2019s USB pairing keys. EscapeOS on iOS 26.4 and '
+              'later also needs Remote Pairing keys from an iLoader file.';
+      await _dialogs.alert(
+        title: 'Pairing file exported',
+        message: 'Wrote $where. $completeness',
+      );
+    } on EngineShutdownException {
+      return;
+    } catch (error) {
+      if (!isDisposed) {
+        await _dialogs.alert(
+          title: 'Could not export pairing file',
+          message: BaseViewModel.errorText(error),
+        );
+      }
+    } finally {
+      if (!isDisposed) {
+        _isPairingBusy = false;
+        notify();
+      }
+    }
+  }
+
+  Future<void> placePairing() async {
+    if (!canPlacePairing) return;
+    final PairingStatus? snapshot = _pairing;
+    if (snapshot == null) return;
+
+    if (snapshot.consumers.isEmpty) {
+      await _dialogs.alert(
+        title: 'No supported apps installed',
+        message:
+            'Sideload EscapeOS, SideStore, AltStore, LiveContainer, or StikDebug, '
+            'then place the pairing file. iPASide writes it into each app\u2019s '
+            'Documents folder under the name that app looks for.',
+      );
+      return;
+    }
+
+    if (!snapshot.hasRppairing &&
+        snapshot.consumers.any((PairingConsumerInfo c) => c.needsRppairing)) {
+      final bool confirmed = await _dialogs.confirm(
+        title: 'Place pairing file without Remote Pairing keys?',
+        message:
+            'This file has this PC\u2019s USB pairing keys, which SideStore and '
+            'AltStore use. EscapeOS and StikDebug on iOS 26.4 and later also need '
+            'Remote Pairing keys. Import an iLoader pairing file for this iPhone '
+            'first, or place this file anyway for SideStore and older iOS.',
+        confirmLabel: 'Place anyway',
+      );
+      if (!confirmed || isDisposed) return;
+    }
+
+    _isPairingBusy = true;
+    notify();
+    try {
+      final PairingDelivery result = await _engine.deliverPairing(
+        udid: _devices.selectedUdid,
+        connection: _devices.connectionArg,
+      );
+      if (isDisposed) return;
+      await _loadPairing();
+      if (isDisposed) return;
+      await _dialogs.alert(
+        title: result.allPlaced
+            ? 'Pairing file placed'
+            : 'Pairing file could not be placed on every app',
+        message: _placementMessage(result),
+      );
+    } on EngineShutdownException {
+      return;
+    } catch (error) {
+      if (!isDisposed) {
+        await _dialogs.alert(
+          title: 'Could not place pairing file',
+          message: BaseViewModel.errorText(error),
+        );
+      }
+    } finally {
+      if (!isDisposed) {
+        _isPairingBusy = false;
+        notify();
+      }
+    }
+  }
+
+  static String _placementMessage(PairingDelivery result) {
+    if (result.placed.isEmpty) {
+      return 'No supported apps are installed on this iPhone.';
+    }
+    final StringBuffer buffer = StringBuffer();
+    for (final PairingPlacement item in result.placed) {
+      final String name = item.name ?? item.bundleId ?? 'App';
+      if (item.placed) {
+        buffer.writeln('$name: wrote ${item.filename}.');
+      } else {
+        buffer.writeln('$name: ${item.error ?? 'could not be written'}.');
+      }
+    }
+    if (result.note != null && !result.hasRppairing) {
+      buffer.writeln();
+      buffer.write(result.note);
+    }
+    return buffer.toString().trim();
+  }
 
   // ---- Loads ----
 
@@ -196,8 +399,12 @@ class HomeViewModel extends BaseViewModel {
     deviceIos = '';
     deviceUdid = '';
     _isDeviceLoading = true;
+    _pairing = null;
+    _pairingError = null;
+    _isPairingLoading = true;
     notify();
     _loadDevice();
+    _loadPairing();
   }
 
   Future<void> _loadAccount() async {
@@ -214,6 +421,42 @@ class HomeViewModel extends BaseViewModel {
     } finally {
       _isAccountLoading = false;
       notify();
+    }
+  }
+
+  Future<void> _loadPairing() async {
+    final int token = ++_pairingLoadToken;
+    final String? udid = await _devices.targetUdid();
+    final String? connection = _devices.connectionArg;
+    if (isDisposed || token != _pairingLoadToken) return;
+
+    if (udid == null || udid.isEmpty) {
+      _pairing = null;
+      _pairingError = null;
+      _isPairingLoading = false;
+      notify();
+      return;
+    }
+
+    try {
+      final PairingStatus status = await _engine.pairingStatus(
+        udid: udid,
+        connection: connection,
+      );
+      if (token != _pairingLoadToken) return;
+      _pairing = status;
+      _pairingError = null;
+    } catch (error) {
+      if (token != _pairingLoadToken) return;
+      if (!BaseViewModel.isShutdown(error)) {
+        _pairingError = BaseViewModel.errorText(error);
+        _pairing = null;
+      }
+    } finally {
+      if (token == _pairingLoadToken) {
+        _isPairingLoading = false;
+        notify();
+      }
     }
   }
 

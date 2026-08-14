@@ -35,10 +35,30 @@ void main() {
       ]);
     });
 
+    test('the pairing dialogs name both plist forms SideStore and EscapeOS use',
+        () {
+      expect(
+        NativeFilePickerService.pairingOpenTitle,
+        'Choose a pairing file',
+      );
+      expect(
+        NativeFilePickerService.pairingSaveTitle,
+        'Export pairing file',
+      );
+      expect(NativeFilePickerService.pairingFilters, <FileDialogFilter>[
+        const FileDialogFilter(
+          label: 'Pairing file (*.plist;*.mobiledevicepairing)',
+          spec: '*.plist;*.mobiledevicepairing',
+        ),
+        FileDialogFilter.allFiles,
+      ]);
+    });
+
     test('every spec is a pattern list the shell can parse', () {
       final List<FileDialogFilter> all = <FileDialogFilter>[
         ...NativeFilePickerService.ipaFilters,
         ...NativeFilePickerService.tweakFilters,
+        ...NativeFilePickerService.pairingFilters,
       ];
 
       for (final FileDialogFilter filter in all) {
@@ -59,6 +79,7 @@ void main() {
       for (final FileDialogFilter filter in <FileDialogFilter>[
         ...NativeFilePickerService.ipaFilters,
         ...NativeFilePickerService.tweakFilters,
+        ...NativeFilePickerService.pairingFilters,
       ]) {
         for (final String pattern in filter.spec.split(';')) {
           expect(
@@ -90,6 +111,22 @@ void main() {
       test('pickSignedFolder reports a cancelled pick too', () async {
         expect(
           await const NativeFilePickerService().pickSignedFolder(),
+          isNull,
+        );
+      });
+
+      test('pickPairingFile reports a cancelled pick too', () async {
+        expect(
+          await const NativeFilePickerService().pickPairingFile(),
+          isNull,
+        );
+      });
+
+      test('savePairingFile reports a cancelled pick too', () async {
+        expect(
+          await const NativeFilePickerService().savePairingFile(
+            suggestedName: 'pairingFile.plist',
+          ),
           isNull,
         );
       });

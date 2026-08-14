@@ -13,7 +13,7 @@ No jailbreak. No paid developer account. No closed-source middleman.
 [![Windows](https://img.shields.io/badge/Windows%2010%2F11-64--bit-blue?style=for-the-badge)](#get-started)
 [![Website](https://img.shields.io/badge/ipaside.com-visit-8c5cf0?style=for-the-badge)](https://ipaside.com)
 [![CI](https://img.shields.io/github/actions/workflow/status/pwnapplehat/iPASide/ci.yml?branch=main&style=for-the-badge&label=CI)](https://github.com/pwnapplehat/iPASide/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-907-4cc38a?style=for-the-badge)](#quality)
+[![Tests](https://img.shields.io/badge/tests-1276-4cc38a?style=for-the-badge)](#quality)
 
 *Open source, end to end. Nothing between your Apple ID and Apple.*
 
@@ -54,7 +54,7 @@ iPASide needing to be open.
 
 ## What it looks like
 
-**Home** — your phone, your Apple ID, and how the two are connected.
+**Home** — your phone, your Apple ID, how the two are connected, and this PC's pairing file for SideStore, EscapeOS, and the rest.
 
 ![iPASide Home](docs/screenshots/home.png)
 
@@ -116,6 +116,11 @@ There is a full light theme too, and the sun in the title bar switches to it.
   SideStore and hands it this computer's pairing file, so the phone can re-sign its own
   apps. It needs a local device VPN connected, and an iOS Shortcut named `TurnOffData`
   that iPASide cannot create for you — the app says so rather than letting you find out.
+- **Place a pairing file on the phone.** Home can import an iLoader record (USB
+  pairing plus Remote Pairing keys), export this PC's file, and write it into
+  EscapeOS, SideStore, AltStore, LiveContainer, and StikDebug under the name each
+  app looks for. iOS 26.4+ EscapeOS and StikDebug need the Remote Pairing half;
+  Windows Lockdown alone does not write it.
 - **See and manage your Apple ID's account.** Certificates, App IDs and devices, for any
   Apple ID you have signed in. Each certificate says which tool registered it, because
   Apple counts them per machine and revoking the wrong one breaks a different tool's apps.
@@ -246,6 +251,7 @@ The engine works on its own, without the app. Every command takes `--json`:
 | `signed` | Report or clean up kept `.ipa` files (`--clean`) |
 | `slots` / `revoke-cert` / `delete-app-id` | An Apple ID's certificates, App IDs and devices; `--email` picks which account |
 | `apps` / `uninstall` | Apps installed on the device |
+| `pairing` | Export, import, or place this PC's pairing file (`--export`, `--import`, `--deliver`) |
 
 Device commands take `--udid` to pick a phone and `--connection usb|wifi|auto` to
 pick how to reach it.
@@ -254,8 +260,9 @@ pick how to reach it.
 
 Working end to end, and verified that way rather than assumed: iPASide signs and
 installs real apps onto a physical **iPhone 8 Plus (iOS 16.7.15)** with a free
-Apple ID, over USB. Each release is installed and driven against that device before
-it is published.
+Apple ID, over USB. Pairing import, EscapeOS sideload, and pairing placement were
+verified on a physical **iPhone 17 (iOS 26.5.1)** with this 1.2.2 installer.
+Each release is installed and driven against a real device before it is published.
 
 Not yet verified: a full install over Wi-Fi (talking to the device over Wi-Fi does
 work), two phones attached at once, and paid developer accounts.
@@ -267,12 +274,12 @@ profile.
 
 ## Quality
 
-**1,062 automated tests**, run on every push along with a full installer build:
+**1,276 automated tests**, run on every push along with a full installer build:
 
 | Suite | Tests | Files | What it covers |
 |---|---|---|---|
-| Engine (pytest) | 340 | 20 | Apple ID auth, provisioning, app groups, signing, `.deb` tweak extraction, install progress, device selection, multi-account, LiveContainer entitlements, pairing files, certificate scoping, Windows path limits, expiry, error phrasing |
-| App (Flutter) | 722 | 38 | Every view model, the engine transport, update planning, settings, the platform layer, motion, scroll |
+| Engine (pytest) | 499 | 26 | Apple ID auth, provisioning, app groups, signing, `.deb` tweak extraction, install progress, device selection, multi-account, LiveContainer entitlements, pairing files, certificate scoping, Windows path limits, expiry, error phrasing |
+| App (Flutter) | 777 | 41 | Every view model, the engine transport, update planning, settings, the platform layer, motion, scroll |
 
 CI runs three jobs per push - `Engine tests`, `App analyze + tests`, `Build installer` -
 and lints are errors, not warnings. The badge above links to the runs.

@@ -594,38 +594,12 @@ def pairing_record(udid: str) -> bytes:
     complete and one that is usable; confirmed by SideStore's own log, which lists the
     keys it loaded.
     """
-    exact = _LOCKDOWN_DIR / f"{udid}.plist"
-    source: Path | None = exact if exact.exists() else None
-
-    if source is None:
-        # A connected serial can be formatted differently from the file name (newer
-        # devices carry a dash), so fall back to matching a record's own UDID.
-        wanted = udid.replace("-", "").lower()
-        for path in sorted(_LOCKDOWN_DIR.glob("*.plist")):
-            try:
-                parsed = plistlib.loads(path.read_bytes())
-            except (OSError, ValueError):
-                continue
-            if str(parsed.get("UDID", "")).replace("-", "").lower() == wanted:
-                source = path
-                break
-
-    if source is None:
-        raise LiveContainerError(
-            "This PC has no pairing record for the device, so on-device refresh cannot "
-            "be set up. Reconnect it over USB and trust this computer, then try again."
-        )
+    from . import pairing as pairing_mod
 
     try:
-        record = plistlib.loads(source.read_bytes())
-    except (OSError, ValueError) as exc:
-        raise LiveContainerError(
-            f"The pairing record at {source} could not be read: {exc}"
-        ) from exc
-
-    record.setdefault("UDID", udid)
-    # XML, as AltStore and SideStore write their own.
-    return plistlib.dumps(record, fmt=plistlib.FMT_XML)
+        return pairing_mod.lockdown_xml(udid, lockdown_dir=_LOCKDOWN_DIR)
+    except pairing_mod.PairingError as exc:
+        raise LiveContainerError(str(exc)) from exc
 
 
 def deliver_pairing(bundle_id: str, udid: str, serial: str | None = None) -> dict[str, Any]:
@@ -635,8 +609,16 @@ def deliver_pairing(bundle_id: str, udid: str, serial: str | None = None) -> dic
     LiveContainer's Documents is exposed by the Files app, so the file can still be picked
     by hand if that location ever changes. On a fresh install SideStore's container does
     not exist until it is first opened, so the directory is created rather than assumed.
+
+    Prefers an imported iLoader file when iPASide has one for this UDID, because that is
+    the record SideStore 0.6.3 asks iOS 26.4+ users to reinstall with.
     """
-    payload = pairing_record(udid)
+    from . import pairing as pairing_mod
+
+    try:
+        payload = pairing_mod.payload_bytes(udid, lockdown_dir=_LOCKDOWN_DIR)
+    except pairing_mod.PairingError as exc:
+        raise LiveContainerError(str(exc)) from exc
     try:
         written = asyncio.run(
             _write_documents(

@@ -14,6 +14,12 @@ abstract class FilePickerService {
 
   /// The folder to keep signed IPAs in; null when cancelled.
   Future<String?> pickSignedFolder();
+
+  /// A pairing plist to import; null when cancelled.
+  Future<String?> pickPairingFile();
+
+  /// Where to write an exported pairing file; null when cancelled.
+  Future<String?> savePairingFile({required String suggestedName});
 }
 
 /// Shell-backed implementation.
@@ -34,6 +40,12 @@ class NativeFilePickerService implements FilePickerService {
   /// Title of the folder dialog behind the Signed IPAs setting.
   static const String signedFolderTitle = 'Choose where to keep signed IPAs';
 
+  /// Title of the dialog that picks an iLoader (or other) pairing plist.
+  static const String pairingOpenTitle = 'Choose a pairing file';
+
+  /// Title of the dialog that writes this PC's pairing file to disk.
+  static const String pairingSaveTitle = 'Export pairing file';
+
   /// Type dropdown for the IPA dialog.
   static const List<FileDialogFilter> ipaFilters = <FileDialogFilter>[
     FileDialogFilter(label: 'iOS app (*.ipa)', spec: '*.ipa'),
@@ -44,6 +56,16 @@ class NativeFilePickerService implements FilePickerService {
   /// the dylibs inside it, so both extensions belong in one entry.
   static const List<FileDialogFilter> tweakFilters = <FileDialogFilter>[
     FileDialogFilter(label: 'Tweaks (*.deb;*.dylib)', spec: '*.deb;*.dylib'),
+    FileDialogFilter.allFiles,
+  ];
+
+  /// Type dropdown for pairing files. EscapeOS and StikDebug use `.plist`;
+  /// SideStore and AltStore use `.mobiledevicepairing`. Both are XML plists.
+  static const List<FileDialogFilter> pairingFilters = <FileDialogFilter>[
+    FileDialogFilter(
+      label: 'Pairing file (*.plist;*.mobiledevicepairing)',
+      spec: '*.plist;*.mobiledevicepairing',
+    ),
     FileDialogFilter.allFiles,
   ];
 
@@ -77,6 +99,31 @@ class NativeFilePickerService implements FilePickerService {
     await _letTheTapPaint();
 
     return WindowsFileDialog.openFolder(title: signedFolderTitle);
+  }
+
+  @override
+  Future<String?> pickPairingFile() async {
+    if (!Platform.isWindows) return null;
+    await _letTheTapPaint();
+
+    final List<String> chosen = WindowsFileDialog.open(
+      title: pairingOpenTitle,
+      filters: pairingFilters,
+    );
+    return chosen.isEmpty ? null : chosen.first;
+  }
+
+  @override
+  Future<String?> savePairingFile({required String suggestedName}) async {
+    if (!Platform.isWindows) return null;
+    await _letTheTapPaint();
+
+    return WindowsFileDialog.save(
+      title: pairingSaveTitle,
+      filters: pairingFilters,
+      fileName: suggestedName,
+      defaultExtension: 'plist',
+    );
   }
 
   /// Yields once before blocking.

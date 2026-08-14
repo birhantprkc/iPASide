@@ -104,6 +104,39 @@ abstract final class WindowsFileDialog {
         },
       );
 
+  /// Shows a save dialog headed [title] and returns the path the user chose.
+  ///
+  /// [filters] fills the file-type dropdown the same way [open] does.
+  /// [fileName] is the name the box starts with; [defaultExtension] is appended
+  /// when the user types a name with no suffix. Returns null when they cancel.
+  ///
+  /// Windows only, and modal, exactly like [open].
+  static String? save({
+    required String title,
+    required List<FileDialogFilter> filters,
+    String? fileName,
+    String? defaultExtension,
+  }) {
+    assert(filters.isNotEmpty, 'The shell needs at least one file type.');
+
+    return _showSave(
+      title: title,
+      configure: (IFileSaveDialog dialog, Arena arena) {
+        dialog.setFileTypes(filters.length, filterSpecs(filters, arena));
+        dialog.setFileTypeIndex(1);
+        dialog.setOptions(saveOptions(dialog.getOptions()));
+        if (fileName != null && fileName.isNotEmpty) {
+          dialog.setFileName(fileName.toPcwstr(allocator: arena));
+        }
+        if (defaultExtension != null && defaultExtension.isNotEmpty) {
+          dialog.setDefaultExtension(
+            defaultExtension.toPcwstr(allocator: arena),
+          );
+        }
+      },
+    );
+  }
+
   /// Opens a dialog headed [title], hands it to [configure], shows it, and
   /// returns what [selection] reads back.
   ///
@@ -139,6 +172,43 @@ abstract final class WindowsFileDialog {
     } on WindowsException catch (error) {
       if (error.hr != _cancelled) debugPrint('[file dialog] $title: $error');
       return noSelection;
+    } finally {
+      if (ownsApartment) CoUninitialize();
+    }
+  }
+
+  /// The save-dialog counterpart of [_show]: same apartment, same cancel
+  /// handling, a different COM class because `IFileSaveDialog` is what the
+  /// shell uses when the file does not have to exist yet.
+  static String? _showSave({
+    required String title,
+    required void Function(IFileSaveDialog dialog, Arena arena) configure,
+  }) {
+    final bool ownsApartment = _enterApartment();
+    try {
+      final IFileSaveDialog dialog = createInstance<IFileSaveDialog>(
+        FileSaveDialog,
+      );
+      try {
+        return using<String?>((Arena arena) {
+          dialog.setTitle(title.toPcwstr(allocator: arena));
+          configure(dialog, arena);
+          dialog.show(_ownerWindow());
+
+          final IShellItem? item = dialog.getResult();
+          if (item == null) return null;
+          try {
+            return _pathOf(item);
+          } finally {
+            item.release();
+          }
+        });
+      } finally {
+        dialog.release();
+      }
+    } on WindowsException catch (error) {
+      if (error.hr != _cancelled) debugPrint('[file dialog] $title: $error');
+      return null;
     } finally {
       if (ownsApartment) CoUninitialize();
     }
@@ -188,6 +258,19 @@ abstract final class WindowsFileDialog {
   @visibleForTesting
   static FILEOPENDIALOGOPTIONS folderOptions(FILEOPENDIALOGOPTIONS current) =>
       current | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM;
+
+  /// The save-dialog flags: a real folder, a prompt before overwrite, no
+  /// demand that the file already exist.
+  ///
+  /// `FOS_FILEMUSTEXIST` is the open-dialog constraint and would make Save
+  /// refuse a name the user is trying to create. `FOS_OVERWRITEPROMPT` is what
+  /// every Windows save dialog shows instead.
+  @visibleForTesting
+  static FILEOPENDIALOGOPTIONS saveOptions(FILEOPENDIALOGOPTIONS current) =>
+      current |
+      FOS_PATHMUSTEXIST |
+      FOS_OVERWRITEPROMPT |
+      FOS_FORCEFILESYSTEM;
 
   /// [filters] marshalled into the contiguous `COMDLG_FILTERSPEC` array
   /// `SetFileTypes` expects, with the array and every string it points at owned

@@ -32,6 +32,7 @@ from . import (
     jailbreak,
     livecontainer,
     lockdown,
+    pairing,
     provision,
     refresh,
     sideload,
@@ -1113,6 +1114,115 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _pairing_udid(args: argparse.Namespace) -> str:
+    """The device a pairing command is about.
+
+    ``--udid`` is enough: the lockdown record and any imported iLoader file live
+    on this PC, so export and import must not refuse to run because the phone is
+    unplugged. Placement still talks to the device, and that path fails later if
+    it cannot be reached.
+    """
+    if args.udid:
+        return args.udid.strip()
+    return device.resolve_serial(None)
+
+
+def _print_pairing_status(report: dict[str, Any]) -> None:
+    print(f"Pairing file for {report.get('udid') or '?'}")
+    source = report.get("source") or "none"
+    if source == "imported":
+        print(f"  Source: imported ({report.get('imported_path')})")
+    elif source == "lockdown":
+        print("  Source: this PC's USB pairing record")
+    else:
+        print("  Source: none")
+    print(f"  USB lockdown keys: {'yes' if report.get('has_lockdown') else 'no'}")
+    print(f"  Remote Pairing keys: {'yes' if report.get('has_rppairing') else 'no'}")
+    if report.get("error"):
+        print(f"  {report['error']}")
+    elif report.get("note"):
+        print(f"  {report['note']}")
+    consumers = report.get("consumers") or []
+    if not report.get("device_reachable"):
+        reason = report.get("device_error") or "the device could not be listed"
+        print(f"  Installed apps: not listed ({reason})")
+        return
+    if not consumers:
+        print(
+            "  No supported apps are installed. Sideload EscapeOS, SideStore, "
+            "AltStore, LiveContainer, or StikDebug, then place the file."
+        )
+        return
+    print(f"  {len(consumers)} supported app(s) installed:")
+    for consumer in consumers:
+        extra = " (needs Remote Pairing)" if consumer.get("needs_rppairing") else ""
+        print(
+            f"      {consumer.get('app_name') or consumer.get('name')}  "
+            f"{consumer.get('bundle_id')}  {consumer.get('filename')}{extra}"
+        )
+
+
+def _print_pairing_delivery(result: dict[str, Any]) -> None:
+    placed = result.get("placed") or []
+    if not placed:
+        print(
+            "No supported apps are installed on this iPhone. Sideload EscapeOS, "
+            "SideStore, AltStore, LiveContainer, or StikDebug first."
+        )
+        return
+    print(f"Placed pairing file on {len(placed)} app(s):")
+    for item in placed:
+        name = item.get("name") or item.get("bundle_id")
+        if item.get("placed"):
+            print(f"  {name}: wrote {item.get('filename')} ({item.get('bytes')} bytes)")
+        else:
+            print(f"  {name}: failed ({item.get('error')})")
+        if item.get("warning"):
+            print(f"    {item['warning']}")
+    if result.get("note") and not result.get("has_rppairing"):
+        print(result["note"])
+
+
+def _cmd_pairing(args: argparse.Namespace) -> int:
+    udid = _pairing_udid(args)
+    if args.pairing_export:
+        result = pairing.export_to(udid, args.pairing_export)
+        if args.json:
+            _emit(args, result)
+            return 0
+        print(f"Wrote {result['bytes']} bytes to {result['path']}")
+        if result.get("note"):
+            print(result["note"])
+        return 0
+    if args.pairing_import:
+        result = pairing.import_from(udid, args.pairing_import)
+        if args.json:
+            _emit(args, result)
+            return 0
+        print(f"Imported pairing file for {udid}")
+        print(f"  Stored at {result['path']}")
+        if result.get("note"):
+            print(f"  {result['note']}")
+        return 0
+    if args.deliver:
+        result = pairing.deliver_to_device(udid, udid)
+        if args.json:
+            _emit(args, result)
+            return 0
+        _print_pairing_delivery(result)
+        placed = result.get("placed") or []
+        if not placed:
+            return 0
+        return 0 if all(item.get("placed") for item in placed) else 1
+
+    report = pairing.status(udid, udid)
+    if args.json:
+        _emit(args, report)
+        return 0
+    _print_pairing_status(report)
+    return 1 if report.get("error") else 0
+
+
 _HANDLERS = {
     "doctor": _cmd_doctor,
     "devices": _cmd_devices,
@@ -1127,6 +1237,7 @@ _HANDLERS = {
     "provision": _cmd_provision,
     "sign": _cmd_sign,
     "sideload": _cmd_sideload,
+    "pairing": _cmd_pairing,
     "livecontainer": _cmd_livecontainer,
     "jailbreak": _cmd_jailbreak,
     "installs": _cmd_installs,
@@ -1339,6 +1450,32 @@ def build_parser() -> argparse.ArgumentParser:
     sideload_parser.add_argument(
         "--remove-device-restrictions", action=argparse.BooleanOptionalAction, default=True,
         help="remove UISupportedDevices",
+    )
+
+    pairing_parser = sub.add_parser(
+        "pairing",
+        parents=[common, target],
+        help="export, import, or place this PC's pairing file on the iPhone",
+    )
+    pairing_actions = pairing_parser.add_mutually_exclusive_group()
+    pairing_actions.add_argument(
+        "--export",
+        dest="pairing_export",
+        default=None,
+        metavar="PATH",
+        help="write the pairing file to PATH (XML plist)",
+    )
+    pairing_actions.add_argument(
+        "--import",
+        dest="pairing_import",
+        default=None,
+        metavar="PATH",
+        help="store an iLoader (or other) pairing plist for this device",
+    )
+    pairing_actions.add_argument(
+        "--deliver",
+        action="store_true",
+        help="write the pairing file into every supported app installed on the device",
     )
 
     lc_parser = sub.add_parser(

@@ -74,6 +74,13 @@ class _FakePicker implements FilePickerService {
 
   @override
   Future<String?> pickSignedFolder() async => null;
+
+  @override
+  Future<String?> pickPairingFile() async => null;
+
+  @override
+  Future<String?> savePairingFile({required String suggestedName}) async =>
+      null;
 }
 
 /// An in-memory settings store: nothing here touches the real settings file, and

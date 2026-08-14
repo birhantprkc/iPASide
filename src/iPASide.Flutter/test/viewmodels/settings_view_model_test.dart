@@ -129,6 +129,14 @@ class _FakePicker implements FilePickerService {
   @override
   Future<List<String>> pickTweaks() async =>
       throw UnsupportedError('Settings never opens a tweak.');
+
+  @override
+  Future<String?> pickPairingFile() async =>
+      throw UnsupportedError('Settings never opens a pairing file.');
+
+  @override
+  Future<String?> savePairingFile({required String suggestedName}) async =>
+      throw UnsupportedError('Settings never exports a pairing file.');
 }
 
 /// A dialog stand-in: answers [confirm] without a navigator.
