@@ -7,7 +7,7 @@ import 'package:ipaside/services/auto_refresh_runner.dart';
 import 'package:ipaside/services/settings_store.dart';
 
 /// A transport stand-in that records argv and replays one canned frame.
-class _FakeRunner implements EngineCommandRunner {
+class _FakeRunner with EngineCommandRunner {
   _FakeRunner({this.outcome});
 
   /// The result frame to answer with, or an error to throw. Null answers with an

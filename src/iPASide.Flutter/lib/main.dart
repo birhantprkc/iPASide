@@ -237,8 +237,9 @@ class _IpaSideAppState extends State<IpaSideApp> with WindowListener {
     windowManager.setPreventClose(true);
     // A version comparison only — nothing is downloaded without being asked.
     _updates.check();
-    // Enumerate devices once up front: every screen's device-targeted call reads
-    // the selection, so it has to be resolved before the first of them runs.
+    // Live usbmux Attached/Detached first, then a one-shot listing so the first
+    // paint is not waiting on Listen if the phone is already plugged in.
+    _devices.startListening();
     _devices.refresh();
     // Which Apple IDs are signed in, so Home can name the one in use and offer the
     // others without a round trip when the user opens the menu.

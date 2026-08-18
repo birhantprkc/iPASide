@@ -9,7 +9,7 @@ import 'package:ipaside/viewmodels/home_view_model.dart';
 import 'package:ipaside/viewmodels/navigation_state.dart';
 
 /// A transport stand-in scripted per engine command, recording every argv.
-class _FakeRunner implements EngineCommandRunner {
+class _FakeRunner with EngineCommandRunner {
   final Map<String, Queue<Object>> _scripted = <String, Queue<Object>>{};
   final Map<String, Object> _defaults = <String, Object>{};
 

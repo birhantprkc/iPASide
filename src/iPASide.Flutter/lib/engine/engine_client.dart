@@ -39,7 +39,7 @@ class EngineResult {
 /// Extracted from the C# design (where `EngineApi` took the concrete
 /// `EngineClient`) so the typed layer can be unit-tested without spawning a real
 /// Python process.
-abstract class EngineCommandRunner {
+abstract mixin class EngineCommandRunner {
   /// Runs one command and returns its result frame.
   ///
   /// [onProgress] receives each raw progress line, [env] is applied to that one
@@ -49,7 +49,14 @@ abstract class EngineCommandRunner {
     void Function(String line)? onProgress,
     Map<String, String>? env,
   });
+
+  /// Unsolicited serve frames (`type: event`). Empty for scripted fakes.
+  Stream<Map<String, dynamic>> get events => const Stream.empty();
 }
+
+/// Whether [frame] is an unsolicited serve event rather than a request frame.
+bool isUnsolicitedEngineEvent(Map<String, dynamic> frame) =>
+    frame['type'] == 'event';
 
 /// Destination for engine stderr and lifecycle diagnostics.
 typedef EngineLogSink = void Function(String message);
@@ -70,7 +77,7 @@ void defaultEngineLog(String message) =>
 /// [dispose] is idempotent and kill-first for the in-flight case. Afterwards
 /// every call throws [EngineDisposedException], while the interrupted request
 /// faults with [EngineShutdownException].
-class EngineClient implements EngineCommandRunner {
+class EngineClient with EngineCommandRunner {
   /// Resolves a launch spec immediately (so bad configuration surfaces early)
   /// but starts nothing until the first request or [prewarm].
   EngineClient({
@@ -105,6 +112,8 @@ class EngineClient implements EngineCommandRunner {
   final EngineLogSink _log;
   final EngineLaunchSpec _spec;
   final AsyncMutex _gate = AsyncMutex();
+  final StreamController<Map<String, dynamic>> _events =
+      StreamController<Map<String, dynamic>>.broadcast();
 
   Process? _process;
   IOSink? _stdin;
@@ -115,6 +124,10 @@ class EngineClient implements EngineCommandRunner {
   bool _disposed = false;
   Future<void>? _disposeTask;
   int? _enginePid;
+
+  /// Unsolicited `type: event` frames from the live serve process.
+  @override
+  Stream<Map<String, dynamic>> get events => _events.stream;
 
   /// How the engine will be launched; useful in diagnostics screens.
   EngineLaunchSpec get launchSpec => _spec;
@@ -205,6 +218,9 @@ class EngineClient implements EngineCommandRunner {
 
         final Map<String, dynamic>? frame = tryDecodeJsonObject(raw);
         if (frame == null) {
+          continue;
+        }
+        if (isUnsolicitedEngineEvent(frame)) {
           continue;
         }
         if (frame['id'] != id) {
@@ -306,6 +322,7 @@ class EngineClient implements EngineCommandRunner {
     final _LineQueue lines = _LineQueue(
       process.stdout.transform(utf8.decoder).transform(const LineSplitter()),
       _log,
+      onEvent: _dispatchEvent,
     );
     _stdout = lines;
 
@@ -320,6 +337,13 @@ class EngineClient implements EngineCommandRunner {
         );
 
     await _awaitReady(lines);
+  }
+
+  void _dispatchEvent(Map<String, dynamic> frame) {
+    if (_events.isClosed) {
+      return;
+    }
+    _events.add(frame);
   }
 
   Future<void> _awaitReady(_LineQueue lines) async {
@@ -466,6 +490,9 @@ class EngineClient implements EngineCommandRunner {
       }
     } finally {
       await _cleanup();
+      if (!_events.isClosed) {
+        await _events.close();
+      }
       if (held) {
         // Wake the one possibly-parked waiter so it throws the disposed error.
         _gate.release();
@@ -478,11 +505,15 @@ class EngineClient implements EngineCommandRunner {
 ///
 /// The request loop needs "give me the next frame" semantics, which a bare
 /// `Stream` subscription does not offer and which `package:async`'s StreamQueue
-/// would - but that is not a declared dependency. Buffering is unbounded by
-/// design: the engine writes only while a request is in flight, and that request
-/// drains every line it produces.
+/// would - but that is not a declared dependency. Event frames are stripped
+/// here so they reach [EngineClient.events] even while a request is in flight,
+/// and so they are never buffered for the next `run` to discard.
 class _LineQueue {
-  _LineQueue(Stream<String> lines, this._log) {
+  _LineQueue(
+    Stream<String> lines,
+    this._log, {
+    this._onEvent,
+  }) {
     _subscription = lines.listen(
       _onLine,
       onError: _onError,
@@ -492,6 +523,7 @@ class _LineQueue {
   }
 
   final EngineLogSink _log;
+  final void Function(Map<String, dynamic> frame)? _onEvent;
   final Queue<String> _buffer = Queue<String>();
   late final StreamSubscription<String> _subscription;
   Completer<String?>? _waiter;
@@ -524,6 +556,11 @@ class _LineQueue {
   }
 
   void _onLine(String line) {
+    final Map<String, dynamic>? frame = tryDecodeJsonObject(line);
+    if (frame != null && isUnsolicitedEngineEvent(frame)) {
+      _onEvent?.call(frame);
+      return;
+    }
     final Completer<String?>? waiter = _waiter;
     if (waiter != null) {
       _waiter = null;

@@ -8,7 +8,7 @@ import 'package:ipaside/viewmodels/account_selection.dart';
 import 'package:ipaside/viewmodels/account_view_model.dart';
 
 /// A transport stand-in scripted per engine command, recording every argv.
-class _FakeRunner implements EngineCommandRunner {
+class _FakeRunner with EngineCommandRunner {
   final Map<String, Queue<Object>> _scripted = <String, Queue<Object>>{};
   final Map<String, Object> _defaults = <String, Object>{};
 

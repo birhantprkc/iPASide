@@ -14,6 +14,7 @@ import io
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -1017,19 +1018,32 @@ def _cmd_resolve_tweak(args: argparse.Namespace) -> int:
 # Python-startup + import cost on every action. It speaks newline-delimited JSON
 # over stdio: one request object per stdin line, and per line on stdout either a
 # progress frame or a final result frame, both tagged with the request id.
+#
+# Unsolicited ``{"type":"event","name":"devices","data":[...]}`` frames are also
+# written on this channel when usbmux reports Attached/Detached. They carry no
+# request id. Stdout writes are locked because the Listen thread and a command
+# can emit at the same time.
 # --------------------------------------------------------------------------- #
-def _write_frame(channel: Any, frame: dict[str, Any]) -> None:
-    channel.write(json.dumps(frame, default=_json_default))
-    channel.write("\n")
-    channel.flush()
+class _StdoutChannel:
+    """Thread-safe NDJSON writer for the serve stdout channel."""
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+        self._lock = threading.Lock()
+
+    def write_frame(self, frame: dict[str, Any]) -> None:
+        line = json.dumps(frame, default=_json_default) + "\n"
+        with self._lock:
+            self._stream.write(line)
+            self._stream.flush()
 
 
 class _ProgressWriter(io.TextIOBase):
     """A stderr stand-in that forwards each line written during a command as an
     id-tagged progress frame (commands stream progress via ``print(..., file=sys.stderr)``)."""
 
-    def __init__(self, channel: Any, request_id: Any) -> None:
-        self._channel = channel
+    def __init__(self, write_frame: Any, request_id: Any) -> None:
+        self._write_frame = write_frame
         self._id = request_id
         self._pending = ""
 
@@ -1039,14 +1053,14 @@ class _ProgressWriter(io.TextIOBase):
             line, self._pending = self._pending.split("\n", 1)
             line = line.strip()
             if line:
-                _write_frame(self._channel, {"id": self._id, "type": "progress", "line": line})
+                self._write_frame({"id": self._id, "type": "progress", "line": line})
         return len(text)
 
     def flush(self) -> None:  # pragma: no cover - nothing buffered downstream
         pass
 
 
-def _run_request(request: dict[str, Any], channel: Any) -> None:
+def _run_request(request: dict[str, Any], write_frame: Any) -> None:
     """Run one command for the server: capture its JSON result, stream progress."""
     request_id = request.get("id")
     raw_args = list(request.get("args") or [])
@@ -1066,7 +1080,7 @@ def _run_request(request: dict[str, Any], channel: Any) -> None:
         if namespace.command == "serve":
             raise ValueError("nested serve is not allowed")
         sys.stdout = out_buffer
-        sys.stderr = _ProgressWriter(channel, request_id)
+        sys.stderr = _ProgressWriter(write_frame, request_id)
         ok = (dispatch(namespace) or 0) == 0
         text = out_buffer.getvalue().strip()
         if text:
@@ -1088,29 +1102,40 @@ def _run_request(request: dict[str, Any], channel: Any) -> None:
             else:
                 os.environ[key] = previous
 
-    _write_frame(channel, {"id": request_id, "type": "result", "ok": ok, "data": data, "error": error})
+    write_frame({"id": request_id, "type": "result", "ok": ok, "data": data, "error": error})
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
-    channel = sys.stdout
+    channel = _StdoutChannel(sys.stdout)
     reconfigure = getattr(sys.stdin, "reconfigure", None)
     if reconfigure is not None:
         try:
             reconfigure(encoding="utf-8")
         except (ValueError, OSError):
             pass
-    _write_frame(channel, {"type": "ready", "version": __version__})
-    for raw_line in sys.stdin:
-        raw_line = raw_line.strip()
-        if not raw_line:
-            continue
-        try:
-            request = json.loads(raw_line)
-        except json.JSONDecodeError:
-            continue
-        if request.get("type") == "shutdown":
-            break
-        _run_request(request, channel)
+    stop = threading.Event()
+    watcher = threading.Thread(
+        target=device.run_usbmux_watch,
+        args=(channel.write_frame, stop),
+        name="usbmux-listen",
+        daemon=True,
+    )
+    channel.write_frame({"type": "ready", "version": __version__})
+    watcher.start()
+    try:
+        for raw_line in sys.stdin:
+            raw_line = raw_line.strip()
+            if not raw_line:
+                continue
+            try:
+                request = json.loads(raw_line)
+            except json.JSONDecodeError:
+                continue
+            if request.get("type") == "shutdown":
+                break
+            _run_request(request, channel.write_frame)
+    finally:
+        stop.set()
     return 0
 
 

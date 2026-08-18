@@ -9,7 +9,7 @@ import 'package:ipaside/viewmodels/apple_support_view_model.dart';
 
 /// A transport stand-in: answers each `apple-support` variant from memory, so no
 /// test touches the network, PowerShell, or a 198 MB download.
-class _FakeRunner implements EngineCommandRunner {
+class _FakeRunner with EngineCommandRunner {
   /// What `apple-support` reports, newest first when a test queues several.
   final List<Map<String, dynamic>> statuses = <Map<String, dynamic>>[
     _status('missing'),

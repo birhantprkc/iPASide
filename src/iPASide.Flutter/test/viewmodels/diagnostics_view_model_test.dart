@@ -9,7 +9,7 @@ import 'package:ipaside/viewmodels/apple_support_view_model.dart';
 import 'package:ipaside/viewmodels/diagnostics_view_model.dart';
 
 /// A transport stand-in: replays a canned `doctor` frame and counts the runs.
-class _FakeRunner implements EngineCommandRunner {
+class _FakeRunner with EngineCommandRunner {
   EngineResult result = const EngineResult(
     ok: true,
     data: <String, dynamic>{'overall': 'ok', 'checks': <dynamic>[]},

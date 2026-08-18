@@ -15,7 +15,7 @@ import 'package:ipaside/viewmodels/sideload_progress_state.dart';
 /// A transport stand-in scripted per engine command: it records every argv,
 /// replays canned result frames (or throws a canned error), and can emit
 /// progress lines before answering.
-class _FakeRunner implements EngineCommandRunner {
+class _FakeRunner with EngineCommandRunner {
   final Map<String, Queue<Object>> _scripted = <String, Queue<Object>>{};
   final Map<String, Object> _defaults = <String, Object>{};
   final Map<String, List<String>> _progress = <String, List<String>>{};

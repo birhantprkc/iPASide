@@ -12,7 +12,7 @@ import 'package:ipaside/viewmodels/device_selection.dart';
 
 /// A transport stand-in scripted per engine command: it records every argv and
 /// replays canned result frames (or throws a canned error).
-class _FakeRunner implements EngineCommandRunner {
+class _FakeRunner with EngineCommandRunner {
   final Map<String, Queue<Object>> _scripted = <String, Queue<Object>>{};
   final Map<String, Object> _defaults = <String, Object>{};
 

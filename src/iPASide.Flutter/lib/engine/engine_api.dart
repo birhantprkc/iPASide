@@ -1,5 +1,7 @@
 // Ported from iPASide.App/Engine/EngineApi.cs.
 
+import 'dart:async';
+
 import 'engine_client.dart';
 import 'engine_exception.dart';
 import 'json_utils.dart';
@@ -322,6 +324,17 @@ class EngineApi {
         <String>['devices'],
         _asObjectList(DeviceEntry.fromJson),
       );
+
+  /// Live usbmux Attached/Detached listings from the serve process.
+  ///
+  /// Same row shape as [devices]. Scripted fakes emit nothing unless they
+  /// override [EngineCommandRunner.events].
+  Stream<List<DeviceEntry>> get deviceEvents => _client.events
+      .where(
+        (Map<String, dynamic> frame) =>
+            isUnsolicitedEngineEvent(frame) && frame['name'] == 'devices',
+      )
+      .map(_parseDeviceEvent);
 
   /// Reads identity details for the target device.
   Future<DeviceInfo> deviceInfo({String? udid, String? connection}) =>
@@ -822,4 +835,12 @@ class EngineApi {
             if (item is Map<String, dynamic>) fromJson(item),
         ];
       };
+
+  static List<DeviceEntry> _parseDeviceEvent(Map<String, dynamic> frame) {
+    final Object? data = frame['data'];
+    if (data is! List) {
+      return const <DeviceEntry>[];
+    }
+    return _asObjectList(DeviceEntry.fromJson)(data) ?? const <DeviceEntry>[];
+  }
 }

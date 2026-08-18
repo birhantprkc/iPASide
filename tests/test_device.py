@@ -7,6 +7,7 @@ and a second phone silently becomes the target of an install.
 """
 
 import asyncio
+import threading
 
 import pytest
 
@@ -185,3 +186,144 @@ def _positionals(command: str, tmp_path) -> list[str]:
     if command == "uninstall":
         return ["com.example.app"]
     return []
+
+
+class _MuxDev:
+    def __init__(self, devid, serial, connection_type="USB"):
+        self.devid = devid
+        self.serial = serial
+        self.connection_type = connection_type
+
+
+def test_mux_device_to_entry_matches_the_devices_command_shape():
+    entry = device.mux_device_to_entry(_MuxDev(4, UDID, "Network"))
+    assert entry == {
+        "serial": UDID,
+        "connection_type": "Network",
+        "device_id": 4,
+    }
+
+
+def test_watch_emits_only_when_the_mux_list_changes():
+    asyncio.run(_watch_emits_only_when_the_mux_list_changes())
+
+
+async def _watch_emits_only_when_the_mux_list_changes():
+    stop = threading.Event()
+    frames: list[dict] = []
+    phone = _MuxDev(7, UDID)
+    ops: asyncio.Queue = asyncio.Queue()
+    emitted = asyncio.Event()
+
+    class Mux:
+        def __init__(self):
+            self.devices = []
+            self.closed = asyncio.Event()
+
+        async def listen(self):
+            return
+
+        async def receive_device_state_update(self):
+            closed = asyncio.create_task(self.closed.wait())
+            got = asyncio.create_task(ops.get())
+            done, pending = await asyncio.wait(
+                {closed, got}, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in pending:
+                task.cancel()
+            if self.closed.is_set() and got not in done:
+                raise OSError("closed")
+            kind, payload = got.result()
+            if kind == "add":
+                self.devices.append(payload)
+            elif kind == "remove":
+                self.devices = [d for d in self.devices if d.devid != payload]
+            elif kind == "noop":
+                pass
+
+        async def close(self):
+            self.closed.set()
+
+    mux = Mux()
+
+    async def create_mux():
+        return mux
+
+    def emit(frame):
+        frames.append(frame)
+        emitted.set()
+
+    task = asyncio.create_task(
+        device.watch_usbmux(emit, stop, create_mux=create_mux, reconnect_wait=0.01)
+    )
+    await ops.put(("add", phone))
+    await asyncio.wait_for(emitted.wait(), 2)
+    emitted.clear()
+    assert frames[-1]["type"] == "event"
+    assert frames[-1]["name"] == "devices"
+    assert frames[-1]["data"] == [
+        {"serial": UDID, "connection_type": "USB", "device_id": 7}
+    ]
+
+    await ops.put(("noop", None))
+    await ops.put(("remove", 7))
+    await asyncio.wait_for(emitted.wait(), 2)
+    assert [frame["data"] for frame in frames][-1] == []
+    assert len(frames) == 2
+
+    stop.set()
+    await asyncio.wait_for(task, 2)
+
+
+def test_watch_emits_empty_after_a_dropped_listen_socket():
+    asyncio.run(_watch_emits_empty_after_a_dropped_listen_socket())
+
+
+async def _watch_emits_empty_after_a_dropped_listen_socket():
+    """A phone unplugged while usbmux was down must not stay on screen."""
+    stop = threading.Event()
+    frames: list[dict] = []
+    emitted = asyncio.Event()
+    muxes: list[object] = []
+
+    class Mux:
+        def __init__(self):
+            self.devices = []
+            self.closed = asyncio.Event()
+
+        async def listen(self):
+            return
+
+        async def receive_device_state_update(self):
+            await self.closed.wait()
+            raise OSError("closed")
+
+        async def close(self):
+            self.closed.set()
+
+    async def create_mux():
+        mux = Mux()
+        muxes.append(mux)
+        return mux
+
+    def emit(frame):
+        frames.append(frame)
+        emitted.set()
+
+    task = asyncio.create_task(
+        device.watch_usbmux(emit, stop, create_mux=create_mux, reconnect_wait=0.01)
+    )
+    await asyncio.wait_for(_until(lambda: len(muxes) >= 1), 2)
+    first = muxes[0]
+    first.devices = [_MuxDev(7, UDID)]
+    await first.close()
+    await asyncio.wait_for(_until(lambda: len(muxes) >= 2), 2)
+    await asyncio.wait_for(emitted.wait(), 2)
+    assert frames[-1]["data"] == []
+    stop.set()
+    await asyncio.wait_for(task, 2)
+
+
+async def _until(predicate):
+    while not predicate():
+        await asyncio.sleep(0)

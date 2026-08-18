@@ -7,6 +7,9 @@ values for a chosen device.
 
 from __future__ import annotations
 
+import asyncio
+import threading
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from . import lockdown
@@ -18,20 +21,28 @@ class DeviceError(EngineError):
     """No device to act on, or no way to tell which one was meant."""
 
 
+def mux_device_to_entry(dev: Any) -> dict[str, Any]:
+    """One ``devices`` row from a pymobiledevice3 ``MuxDevice`` (or test double)."""
+    return {
+        "serial": getattr(dev, "serial", None),
+        "connection_type": getattr(dev, "connection_type", None),
+        "device_id": getattr(dev, "devid", getattr(dev, "device_id", None)),
+    }
+
+
+def listing_signature(entries: list[dict[str, Any]]) -> tuple[tuple[Any, ...], ...]:
+    """Identity of a usbmux listing: serial, transport, and mux handle per row."""
+    return tuple(
+        (entry.get("serial"), entry.get("connection_type"), entry.get("device_id"))
+        for entry in entries
+    )
+
+
 async def _list_devices_async() -> list[dict[str, Any]]:
     from pymobiledevice3 import usbmux
 
     devices = await maybe_await(usbmux.list_devices())
-    result: list[dict[str, Any]] = []
-    for dev in devices:
-        result.append(
-            {
-                "serial": getattr(dev, "serial", None),
-                "connection_type": getattr(dev, "connection_type", None),
-                "device_id": getattr(dev, "devid", getattr(dev, "device_id", None)),
-            }
-        )
-    return result
+    return [mux_device_to_entry(dev) for dev in devices]
 
 
 def list_devices() -> list[dict[str, Any]]:
@@ -120,3 +131,104 @@ async def _get_device_info_async(serial: str | None, prefer_usb: bool) -> dict[s
 def get_device_info(serial: str | None = None, prefer_usb: bool = True) -> dict[str, Any]:
     """Return a curated lockdown value bag for one device (USB preferred)."""
     return run(_get_device_info_async(serial, prefer_usb))
+
+
+async def _wait_until_stopped(stop: threading.Event) -> None:
+    await asyncio.to_thread(stop.wait)
+
+
+async def watch_usbmux(
+    emit: Callable[[dict[str, Any]], None],
+    stop: threading.Event,
+    *,
+    create_mux: Callable[[], Awaitable[Any]] | None = None,
+    reconnect_wait: float = 1.0,
+) -> None:
+    """Hold a usbmux Listen socket and ``emit`` a ``devices`` event on Attached/Detached.
+
+    This is the live inventory, not a poll: ``receive_device_state_update`` blocks
+    until Apple Mobile Device Service (or usbmuxd) writes Attached, Detached, or
+    Paired. Paired does not change the list, so it is not emitted.
+
+    ``reconnect_wait`` is only paid when the Listen socket itself cannot be
+    opened or dies (service not running, AMDS restart). It is not an inventory
+    interval.
+    """
+    from pymobiledevice3.exceptions import MuxException
+
+    async def default_create_mux() -> Any:
+        from pymobiledevice3 import usbmux
+
+        return await usbmux.create_mux()
+
+    factory = create_mux or default_create_mux
+    last: tuple[tuple[Any, ...], ...] | None = None
+    had_listen = False
+    stopped = asyncio.create_task(_wait_until_stopped(stop))
+
+    def publish(entries: list[dict[str, Any]]) -> None:
+        nonlocal last
+        signature = listing_signature(entries)
+        if signature == last:
+            return
+        last = signature
+        emit({"type": "event", "name": "devices", "data": entries})
+
+    try:
+        while not stop.is_set():
+            mux: Any = None
+            try:
+                mux = await factory()
+                await mux.listen()
+                # First Listen: usbmux follows with Attached for whoever is already
+                # plugged in. Emitting empty here would make the UI treat that as
+                # a Detached and ignore the one-shot `devices` RPC. After a dropped
+                # socket, emit the (usually empty) snapshot so a phone unplugged
+                # while we were disconnected does not stay on screen.
+                if had_listen:
+                    publish([mux_device_to_entry(dev) for dev in mux.devices])
+                had_listen = True
+                while not stop.is_set():
+                    update = asyncio.create_task(mux.receive_device_state_update())
+                    done, _pending = await asyncio.wait(
+                        {update, stopped},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if stopped in done:
+                        if not update.done():
+                            update.cancel()
+                            try:
+                                await update
+                            except asyncio.CancelledError:
+                                pass
+                        return
+                    await update
+                    publish([mux_device_to_entry(dev) for dev in mux.devices])
+            except (OSError, MuxException):
+                if stop.is_set():
+                    return
+                await asyncio.to_thread(stop.wait, reconnect_wait)
+            finally:
+                if mux is not None:
+                    close = getattr(mux, "close", None)
+                    if close is not None:
+                        try:
+                            await maybe_await(close())
+                        except OSError:
+                            pass
+    finally:
+        if not stopped.done():
+            stopped.cancel()
+            try:
+                await stopped
+            except asyncio.CancelledError:
+                pass
+
+
+def run_usbmux_watch(
+    emit: Callable[[dict[str, Any]], None],
+    stop: threading.Event,
+    **kwargs: Any,
+) -> None:
+    """``watch_usbmux`` for a background thread that has no event loop yet."""
+    asyncio.run(watch_usbmux(emit, stop, **kwargs))

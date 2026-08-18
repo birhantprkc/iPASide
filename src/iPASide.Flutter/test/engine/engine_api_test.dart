@@ -1,12 +1,22 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ipaside/engine/engine_api.dart';
 import 'package:ipaside/engine/engine_client.dart';
 import 'package:ipaside/engine/engine_exception.dart';
 import 'package:ipaside/engine/models.dart';
 
+class _StreamingRunner extends _FakeRunner {
+  final StreamController<Map<String, dynamic>> bus =
+      StreamController<Map<String, dynamic>>.broadcast();
+
+  @override
+  Stream<Map<String, dynamic>> get events => bus.stream;
+}
+
 /// A transport stand-in: records what the facade asked for and replays a
 /// canned result plus canned progress lines.
-class _FakeRunner implements EngineCommandRunner {
+class _FakeRunner with EngineCommandRunner {
   _FakeRunner({
     this.result = const EngineResult(ok: true, data: <String, dynamic>{}),
     this.progress = const <String>[],
@@ -509,6 +519,27 @@ void main() {
 
       runner.result = const EngineResult(ok: true, data: <dynamic>[]);
       expect(await api.devices(), isEmpty);
+    });
+
+    test('deviceEvents maps live usbmux listings', () async {
+      final _StreamingRunner runner = _StreamingRunner();
+      final EngineApi api = EngineApi(runner);
+      final Future<List<DeviceEntry>> next = api.deviceEvents.first;
+
+      runner.bus.add(<String, dynamic>{
+        'type': 'event',
+        'name': 'devices',
+        'data': <dynamic>[
+          <String, dynamic>{
+            'serial': 'AAAA1111',
+            'connection_type': 'USB',
+          },
+        ],
+      });
+
+      expect(await next, <DeviceEntry>[
+        const DeviceEntry(serial: 'AAAA1111', connectionType: 'USB'),
+      ]);
     });
 
     test('deviceInfo maps the PascalCase lockdown keys', () async {

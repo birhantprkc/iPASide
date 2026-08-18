@@ -6,6 +6,16 @@ All notable changes to iPASide are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-08-18
+
+### Added
+
+- **The device list updates while the app stays open.** Plug in or unplug an
+  iPhone and Home, the picker, and every device-targeted screen follow usbmux
+  Attached/Detached immediately. The engine's persistent `serve` process holds a
+  Listen socket and emits a listing event; the desktop shell applies it. There is
+  no poll and no "click the window to notice the cable".
+
 ## [1.2.4] - 2026-08-14
 
 ### Changed

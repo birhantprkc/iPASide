@@ -8,15 +8,28 @@ import 'package:ipaside/viewmodels/device_selection.dart';
 
 /// A transport stand-in scripted per engine command: it records every argv and
 /// replays canned result frames (or throws a canned error).
-class _FakeRunner implements EngineCommandRunner {
+class _FakeRunner with EngineCommandRunner {
   final Map<String, Queue<Object>> _scripted = <String, Queue<Object>>{};
   final Map<String, Object> _defaults = <String, Object>{};
+  final StreamController<Map<String, dynamic>> _events =
+      StreamController<Map<String, dynamic>>.broadcast();
 
   /// Every argv the facade issued, in order.
   final List<List<String>> calls = <List<String>>[];
 
   /// Parks each answer until completed, so a mid-flight state can be asserted.
   Completer<void>? hold;
+
+  @override
+  Stream<Map<String, dynamic>> get events => _events.stream;
+
+  void emitDevices(List<Map<String, dynamic>> entries) {
+    _events.add(<String, dynamic>{
+      'type': 'event',
+      'name': 'devices',
+      'data': entries,
+    });
+  }
 
   void always(String command, Object outcome) => _defaults[command] = outcome;
 
@@ -662,6 +675,127 @@ void main() {
       expect(await selection.targetUdid(), 'AAAA1111');
       selection.select('BBBB2222');
       expect(await selection.targetUdid(), 'BBBB2222');
+    });
+  });
+
+  group('DeviceSelection while the app stays open', () {
+    test('picks up a phone plugged in after the first listing', () async {
+      final _FakeRunner runner = _FakeRunner()
+        ..next('devices', _listing(<(String?, String?)>[]))
+        ..always(
+          'devices',
+          _listing(<(String?, String?)>[('AAAA1111', 'USB')]),
+        );
+      final DeviceSelection selection = _selection(runner);
+
+      await selection.refresh();
+      expect(selection.isEmpty, isTrue);
+
+      await selection.refresh();
+
+      expect(selection.selectedUdid, 'AAAA1111');
+      expect(selection.isEmpty, isFalse);
+    });
+
+    test('an unchanged listing does not look like a retarget', () async {
+      final _FakeRunner runner = _FakeRunner()
+        ..always(
+          'devices',
+          _listing(<(String?, String?)>[('AAAA1111', 'USB')]),
+        );
+      final DeviceSelection selection = _selection(runner);
+      var notifications = 0;
+      selection.addListener(() => notifications++);
+
+      await selection.refresh();
+      final int afterFirst = notifications;
+      await selection.refresh();
+
+      expect(
+        notifications,
+        afterFirst,
+        reason: 'watching usbmux must not rebuild the UI every tick',
+      );
+    });
+
+    test('an Attached event shows a phone plugged in after launch', () async {
+      final _FakeRunner runner = _FakeRunner()
+        ..always('devices', _listing(<(String?, String?)>[]));
+      final DeviceSelection selection = _selection(runner);
+      selection.startListening();
+      await selection.refresh();
+      expect(selection.isEmpty, isTrue);
+
+      runner.emitDevices(<Map<String, dynamic>>[
+        <String, dynamic>{'serial': 'AAAA1111', 'connection_type': 'USB'},
+      ]);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(selection.selectedUdid, 'AAAA1111');
+      expect(selection.isEmpty, isFalse);
+      expect(
+        runner.callsTo('devices'),
+        hasLength(1),
+        reason: 'hotplug must not poll devices()',
+      );
+    });
+
+    test('a Detached event clears the phone', () async {
+      final _FakeRunner runner = _FakeRunner()
+        ..always(
+          'devices',
+          _listing(<(String?, String?)>[('AAAA1111', 'USB')]),
+        );
+      final DeviceSelection selection = _selection(runner);
+      selection.startListening();
+      await selection.refresh();
+      expect(selection.selectedUdid, 'AAAA1111');
+
+      runner.emitDevices(const <Map<String, dynamic>>[]);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(selection.selectedUdid, isNull);
+      expect(selection.isEmpty, isTrue);
+    });
+
+    test('a racing devices RPC does not unplug a phone Listen already reported',
+        () async {
+      final _FakeRunner runner = _FakeRunner()
+        ..always('devices', _listing(<(String?, String?)>[]));
+      final DeviceSelection selection = _selection(runner);
+      selection.startListening();
+      runner.emitDevices(<Map<String, dynamic>>[
+        <String, dynamic>{'serial': 'AAAA1111', 'connection_type': 'USB'},
+      ]);
+      await Future<void>.delayed(Duration.zero);
+      expect(selection.selectedUdid, 'AAAA1111');
+
+      await selection.refresh();
+
+      expect(
+        selection.selectedUdid,
+        'AAAA1111',
+        reason: 'the empty snapshot left before Attached must not win',
+      );
+    });
+
+    test('dispose stops applying mux events', () async {
+      final _FakeRunner runner = _FakeRunner()
+        ..always('devices', _listing(<(String?, String?)>[]));
+      final DeviceSelection selection = DeviceSelection(
+        engine: EngineApi(runner),
+        settings: _FakeSettings(),
+      );
+      selection.startListening();
+      await selection.refresh();
+      selection.dispose();
+
+      runner.emitDevices(<Map<String, dynamic>>[
+        <String, dynamic>{'serial': 'AAAA1111', 'connection_type': 'USB'},
+      ]);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(selection.selectedUdid, isNull);
     });
   });
 }

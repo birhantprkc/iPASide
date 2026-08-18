@@ -143,6 +143,8 @@ class DeviceSelection extends BaseViewModel {
 
   final EngineApi _engine;
   final SettingsStore _settings;
+  StreamSubscription<List<DeviceEntry>>? _mux;
+  var _muxEventSeen = false;
 
   /// The persisted preference. Only ever changed by an explicit [select].
   String? _preferredUdid;
@@ -227,6 +229,32 @@ class DeviceSelection extends BaseViewModel {
   /// because it has a spinner to show and a future to await is not one.
   Future<void> get ready => _ready.future;
 
+  /// Applies live usbmux Attached/Detached listings until [dispose].
+  ///
+  /// Tests leave this off unless they are asserting hotplug: they drive
+  /// [refresh] and inject events on the fake runner themselves.
+  void startListening() {
+    _mux?.cancel();
+    _mux = _engine.deviceEvents.listen(
+      _onMuxListing,
+      onError: (_) {},
+      cancelOnError: false,
+    );
+  }
+
+  void _onMuxListing(List<DeviceEntry> entries) {
+    if (isDisposed) return;
+    _muxEventSeen = true;
+    _commitListing(group(entries), notifyForFirstLoad: !_hasLoaded);
+  }
+
+  @override
+  void dispose() {
+    _mux?.cancel();
+    _mux = null;
+    super.dispose();
+  }
+
   /// The UDID a device-targeted engine call should carry, waiting for the first
   /// enumeration if it has not settled yet.
   ///
@@ -250,21 +278,43 @@ class DeviceSelection extends BaseViewModel {
   ///
   /// A failure leaves the previous list in place rather than blanking the target:
   /// a transient usbmux hiccup should not retarget an install.
+  ///
+  /// Once [startListening] has delivered a usbmux event, that listing is the live
+  /// state: this snapshot is ignored so a racing `devices` RPC cannot unplug a
+  /// phone that Attached after the request left.
+  ///
+  /// An unchanged listing after the first load does not notify.
   Future<void> refresh() async {
+    // Listen already owns the list. A `devices` RPC here is both wasted and
+    // able to flip isLoading after the phone is already on screen.
+    if (_muxEventSeen) {
+      _hasLoaded = true;
+      if (!_ready.isCompleted) _ready.complete();
+      return;
+    }
     if (_isLoading) return; // one enumeration at a time; the answer is the same
+    final bool showSpinner = !_hasLoaded;
     _isLoading = true;
-    notify();
+    if (showSpinner) notify();
 
+    var changed = true;
     try {
       final List<DeviceTarget> grouped = group(await _engine.devices());
-      _error = null;
-      _devices = <DeviceTarget>[
-        for (final DeviceTarget device in grouped)
-          device.withName(_names[device.udid]),
-      ];
-      _resolveSelection();
+      if (_muxEventSeen) {
+        changed = false;
+        return;
+      }
+      changed = _commitListing(
+        grouped,
+        notifyForFirstLoad: false,
+        notify: false,
+        loadNames: false,
+      );
     } catch (error) {
-      if (BaseViewModel.isShutdown(error)) return; // the app is closing
+      if (BaseViewModel.isShutdown(error)) {
+        changed = false;
+        return; // the app is closing
+      }
       _error = BaseViewModel.errorText(error);
     } finally {
       _isLoading = false;
@@ -274,11 +324,47 @@ class DeviceSelection extends BaseViewModel {
       // target, and a lockdown round trip per device to learn what to call them
       // is not part of that.
       if (!_ready.isCompleted) _ready.complete();
-      notify();
+      if (changed || showSpinner) notify();
     }
 
-    await _loadNames();
+    if (changed) await _loadNames();
   }
+
+  /// Returns whether the grouped listing actually changed.
+  bool _commitListing(
+    List<DeviceTarget> grouped, {
+    required bool notifyForFirstLoad,
+    bool notify = true,
+    bool loadNames = true,
+  }) {
+    var changed = true;
+    if (_hasLoaded &&
+        _error == null &&
+        _signature(grouped) == _signature(_devices)) {
+      changed = false;
+    } else {
+      _error = null;
+      _devices = <DeviceTarget>[
+        for (final DeviceTarget device in grouped)
+          device.withName(_names[device.udid]),
+      ];
+      _resolveSelection();
+    }
+    _hasLoaded = true;
+    if (!_ready.isCompleted) _ready.complete();
+    if (notify && (changed || notifyForFirstLoad)) {
+      this.notify();
+    }
+    if (changed && loadNames) unawaited(_loadNames());
+    return changed;
+  }
+
+  /// UDID plus transports, ignoring display names — enough to know whether the
+  /// watch saw a plug-in, an unplug, or a USB/Wi-Fi change.
+  static String _signature(List<DeviceTarget> devices) => <String>[
+        for (final DeviceTarget device in devices)
+          '${device.udid}:${device.transports.join(',')}',
+      ].join('|');
 
   /// Targets [udid] from now on, and remembers it for the next launch.
   ///

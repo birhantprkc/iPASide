@@ -71,6 +71,34 @@ void main() {
     });
   });
 
+  group('isUnsolicitedEngineEvent', () {
+    test('only type event is unsolicited', () {
+      expect(
+        isUnsolicitedEngineEvent(<String, dynamic>{
+          'type': 'event',
+          'name': 'devices',
+        }),
+        isTrue,
+      );
+      expect(
+        isUnsolicitedEngineEvent(<String, dynamic>{
+          'id': 1,
+          'type': 'result',
+          'ok': true,
+        }),
+        isFalse,
+      );
+      expect(
+        isUnsolicitedEngineEvent(<String, dynamic>{
+          'id': 1,
+          'type': 'progress',
+          'line': 'signing',
+        }),
+        isFalse,
+      );
+    });
+  });
+
   group('EngineClient lifecycle', () {
     late Directory root;
     late _RecordingReaper reaper;

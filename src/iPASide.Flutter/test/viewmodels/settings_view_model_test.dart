@@ -18,7 +18,7 @@ import 'package:ipaside/viewmodels/settings_view_model.dart';
 
 /// A transport stand-in that answers per command, since Settings loads the
 /// session, anisette and version at once.
-class _FakeRunner implements EngineCommandRunner {
+class _FakeRunner with EngineCommandRunner {
   final Map<String, EngineResult> results = <String, EngineResult>{};
 
   /// Results consumed one per call, for a command whose answer changes between

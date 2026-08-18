@@ -10,7 +10,7 @@ import 'package:ipaside/viewmodels/sign_in_view_model.dart';
 
 /// A transport stand-in: records what the facade asked for and replays a
 /// canned result, optionally parked until the test releases [gate].
-class _FakeRunner implements EngineCommandRunner {
+class _FakeRunner with EngineCommandRunner {
   EngineResult result = const EngineResult(
     ok: true,
     data: <String, dynamic>{'status': 'authenticated'},
