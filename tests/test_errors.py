@@ -2,8 +2,9 @@
 
 An expected failure (phone unplugged, Apple said no) must reach the user as its own
 message; anything else must keep its traceback. The app forwards `str(exc)` straight
-into an error banner, so an exception raised with no message renders an empty one --
-which is exactly what `DeviceNotFoundError` does.
+into an error banner, so the vanished-device path must never be an empty string.
+``DeviceNotFoundError`` used to stringify blank; current pymobiledevice3 includes the
+UDID. Either way we translate it into a reconnect sentence.
 """
 
 import pytest
@@ -59,10 +60,6 @@ def _immediately(value):
 
 def test_a_vanished_device_is_named_not_blank(usbmux):
     from pymobiledevice3.exceptions import DeviceNotFoundError
-
-    # It takes the udid and then does nothing with it: str() is empty even though the
-    # one useful fact was handed in. That is the whole reason for translating it.
-    assert str(DeviceNotFoundError(UDID)) == ""
 
     usbmux(DeviceNotFoundError(UDID))
     with pytest.raises(device.DeviceError) as caught:

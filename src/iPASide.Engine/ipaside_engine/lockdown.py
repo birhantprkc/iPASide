@@ -79,9 +79,9 @@ def _unreachable(serial: str, cause: Exception | None, forced: str | None) -> st
     """Why a known device could not be reached, in words worth showing a person.
 
     The device was named, so this is not ambiguity - it is a phone that is gone,
-    locked, or not trusted. Worth translating because ``DeviceNotFoundError`` is
-    raised with no message at all, and the app forwards ``str(exc)`` straight to an
-    error banner: left alone it renders an empty one, which tells the user nothing.
+    locked, or not trusted. Worth translating because ``DeviceNotFoundError``
+    used to stringify blank (an empty banner) and still should not leak the
+    library wording into the UI: the user gets a reconnect sentence.
     """
     from pymobiledevice3.exceptions import DeviceNotFoundError
 
