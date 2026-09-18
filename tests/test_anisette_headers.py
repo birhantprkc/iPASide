@@ -150,8 +150,16 @@ def test_twofa_request_with_sanitised_headers_encodes(monkeypatch: pytest.Monkey
     headers = gsa._twofa_headers("adsid", "token", safe)
     captured: dict[str, str] = {}
 
-    def fake_get(url: str, headers: dict[str, str] | None = None, **kwargs: object) -> MagicMock:
-        assert headers is not None
+    def fake_http(
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        data: bytes | None = None,
+    ) -> MagicMock:
+        assert method == "GET"
+        assert url
+        assert data is None
         for key, value in headers.items():
             value.encode("latin-1")
             captured[key] = value
@@ -160,7 +168,7 @@ def test_twofa_request_with_sanitised_headers_encodes(monkeypatch: pytest.Monkey
         response.content = b""
         return response
 
-    monkeypatch.setattr(gsa.requests, "get", fake_get)
+    monkeypatch.setattr(gsa, "_gsa_http", fake_http)
     gsa._trigger_trusted("adsid", "token", safe)
     assert captured["X-Apple-I-TimeZone"] == "GMT+08:00"
     assert "中国" not in captured["X-Apple-I-TimeZone"]
@@ -169,13 +177,19 @@ def test_twofa_request_with_sanitised_headers_encodes(monkeypatch: pytest.Monkey
 def test_trigger_trusted_raises_on_http_500(monkeypatch: pytest.MonkeyPatch) -> None:
     """Issue #5: never tell the UI a code was sent when Apple rejected the trigger."""
 
-    def fake_get(url: str, headers: dict[str, str] | None = None, **kwargs: object) -> MagicMock:
+    def fake_http(
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        data: bytes | None = None,
+    ) -> MagicMock:
         response = MagicMock()
         response.status_code = 500
         response.content = b""
         return response
 
-    monkeypatch.setattr(gsa.requests, "get", fake_get)
+    monkeypatch.setattr(gsa, "_gsa_http", fake_http)
     with pytest.raises(gsa.GsaError, match="did not send a verification code"):
         gsa._trigger_trusted("adsid", "token", {"X-Apple-Locale": "zh_CN"})
 

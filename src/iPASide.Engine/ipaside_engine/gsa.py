@@ -3,10 +3,25 @@
 Implements Apple's modified SRP-6a login against ``gsa.apple.com/grandslam``,
 using anisette headers from :mod:`ipaside_engine.anisette`. Ported faithfully
 from the community GrandSlam implementations (JJTech0130 / nythepegasus), with
-three production changes: (1) anisette comes from our in-process provider rather
-than a remote server, (2) TLS verification stays on, and (3) two-factor auth is
+five production changes: (1) anisette comes from our in-process provider rather
+than a remote server, (2) TLS verification stays on, (3) two-factor auth is
 a two-step flow (trigger, then submit a code) so it works across separate CLI
-invocations and maps cleanly onto a GUI.
+invocations and maps cleanly onto a GUI, (4) every ``gsa.apple.com`` request
+uses its own HTTP session and then closes it, and (5) GSA requests present
+``com.apple.akd/1.0`` instead of the Anisette package's ``com.apple.dt.Xcode``
+client token.
+
+Apple's GsService2 edge returns HTML ``HTTP 503`` for two independent reasons.
+Keep-alive: the front-end serves two requests per connection; the third is
+HTML 503. Sign-in is three requests on that host (SRP ``init``, SRP
+``complete``, then ``o=apptokens`` or the 2FA trigger), so a pooled connection
+fails before 2FA can complete. That is GitHub issue #7 / AltStore #1782. A
+retry on the spent socket still 503s; a new session does not. Client token:
+the same endpoint drops the request at the edge when ``X-MMe-Client-Info``
+contains ``com.apple.dt.Xcode`` (AltStore #1790). Anisette still reports
+``Xcode/3594.4.19``; bumping the version still 503s. ``com.apple.akd/1.0``
+reaches the service. Isolation does not pass the client-token block; swapping
+the Xcode version does not pass the keep-alive block. Both are required.
 
 The password is never stored; only short-lived session tokens (adsid, IDMS
 token) are cached, under the per-user data dir, never in source control.
@@ -21,6 +36,7 @@ import hashlib
 import hmac
 import json
 import plistlib
+import re
 from collections.abc import Iterator
 from typing import Any
 
@@ -29,6 +45,7 @@ import srp._pysrp as srp
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from requests.adapters import HTTPAdapter
 
 from . import anisette, paths, tls
 from .errors import EngineError
@@ -41,13 +58,17 @@ srp.no_username_in_x()
 _GS_ENDPOINT = "https://gsa.apple.com/grandslam/GsService2"
 _TRUSTED_TRIGGER = "https://gsa.apple.com/auth/verify/trusteddevice"
 _VALIDATE = "https://gsa.apple.com/grandslam/GsService2/validate"
-_SMS_ENDPOINT = "https://gsa.apple.com/auth/verify/phone/"
+_SMS_ENDPOINT = "https://gsa.apple.com/auth/verify/phone"
 _SMS_SUBMIT = "https://gsa.apple.com/auth/verify/phone/securitycode"
 
 _GS_USER_AGENT = "akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0"
 _XCODE_APP_INFO = "com.apple.gs.xcode.auth"
 _XCODE_VERSION = "11.2 (11B41)"
 _TIMEOUT = 30
+# Apple's GsService2 edge refuses any client token matching this (HTML 503).
+# Version does not matter; the substring ``com.apple.dt.Xcode`` is enough.
+_BLOCKED_GSA_CLIENT_TOKEN = re.compile(r"com\.apple\.dt\.Xcode/[^)\s>]+")
+_GSA_CLIENT_TOKEN = "com.apple.akd/1.0"
 
 _PLIST_PROLOG = (
     b'<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -79,6 +100,130 @@ def _cpd(headers: dict[str, str]) -> dict[str, Any]:
     return cpd
 
 
+def _gsa_client_info(value: str) -> str:
+    """Rewrite anisette client-info so Apple's GSA edge will accept it.
+
+    Since 2026-09, ``POST /grandslam/GsService2`` is dropped at the edge
+    (HTML 503) when ``X-MMe-Client-Info`` contains ``com.apple.dt.Xcode``.
+    Version bumps still 503; ``com.apple.akd/1.0`` reaches the service
+    (AltStore #1790, live-checked 2026-09-18 against gsa.apple.com). The
+    Anisette package still reports ``Xcode/3594.4.19``. ``akd`` is the
+    daemon that performs this request on macOS. Developer-services
+    requests are a different host and keep the original anisette string.
+    """
+    if not value:
+        return value
+    return _BLOCKED_GSA_CLIENT_TOKEN.sub(_GSA_CLIENT_TOKEN, value)
+
+
+def _html_error_page(content: bytes) -> bool:
+    snippet = content.lstrip()[:64].lower()
+    return snippet.startswith(b"<html") or snippet.startswith(b"<!doctype")
+
+
+def _gsa_spent_connection(response: requests.Response) -> bool:
+    """True when Apple answered HTML 503 on a spent keep-alive connection."""
+    if response.status_code != 503:
+        return False
+    content_type = (response.headers.get("Content-Type") or "").lower()
+    if "html" in content_type:
+        return True
+    return _html_error_page(response.content)
+
+
+def _gsa_http_once(
+    method: str,
+    url: str,
+    *,
+    headers: dict[str, str],
+    data: bytes | None = None,
+) -> requests.Response:
+    """One GrandSlam request on a throwaway session, then invalidate it.
+
+    Equivalent to AltStore's per-request ``NSURLSession`` plus
+    ``finishTasksAndInvalidate``. ``Connection: close`` tells Apple not to keep
+    the socket; ``max_retries=0`` stops urllib3 from retrying on that socket.
+    """
+    request_headers = dict(headers)
+    request_headers["Connection"] = "close"
+    verify: str | bool = tls.ca_bundle() if url.lower().startswith("https://") else False
+    with requests.Session() as session:
+        adapter = HTTPAdapter(pool_connections=1, pool_maxsize=1, max_retries=0)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        response = session.request(
+            method,
+            url,
+            headers=request_headers,
+            data=data,
+            timeout=_TIMEOUT,
+            verify=verify,
+        )
+        response.content
+        return response
+
+
+def _gsa_http(
+    method: str,
+    url: str,
+    *,
+    headers: dict[str, str],
+    data: bytes | None = None,
+) -> requests.Response:
+    """Send a GSA request, never reusing a spent GrandSlam connection.
+
+    If the first attempt still returns HTML 503 (proxy coalescing, or a pool
+    that ignored ``Connection: close``), try once more on a *new* session.
+    Retrying the spent connection is what AltStore measured as still 503.
+    """
+    response = _gsa_http_once(method, url, headers=headers, data=data)
+    if _gsa_spent_connection(response):
+        response = _gsa_http_once(method, url, headers=headers, data=data)
+    return response
+
+
+def _raise_for_gsa_http(response: requests.Response) -> None:
+    """Map Apple HTTP failures to :class:`GsaError` instead of a raw HTTPError."""
+    if _gsa_spent_connection(response):
+        raise GsaError(
+            "Apple sign-in failed with HTTP 503 from "
+            f"{response.url}. Try signing in again."
+        )
+    if response.status_code >= 400:
+        raise GsaError(
+            f"Apple sign-in failed (HTTP {response.status_code}). "
+            "Check your connection and try again."
+        )
+
+
+def _parse_gs_response(response: requests.Response) -> dict[str, Any]:
+    """Parse a GsService2 body. HTML 503 must not be treated as a plist."""
+    _raise_for_gsa_http(response)
+    parsed = _parse_gsa_plist(response.content)
+    body = parsed.get("Response")
+    if not isinstance(body, dict):
+        raise GsaError("Apple sign-in returned a response that could not be read.")
+    return body
+
+
+def _parse_gsa_plist(content: bytes) -> dict[str, Any]:
+    """Parse a GrandSlam plist. HTML and other garbage become :class:`GsaError`."""
+    if _html_error_page(content):
+        raise GsaError(
+            "Apple sign-in returned an HTML error page instead of a GrandSlam "
+            "response. Try signing in again."
+        )
+    try:
+        parsed = _loads_plist(content)
+    except Exception as exc:
+        raise GsaError(
+            "Apple sign-in returned a response that could not be read."
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise GsaError("Apple sign-in returned a response that could not be read.")
+    return parsed
+
+
 def _gs_request(params: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
     body = {
         "Header": {"Version": "1.0.1"},
@@ -88,17 +233,15 @@ def _gs_request(params: dict[str, Any], headers: dict[str, str]) -> dict[str, An
         "Content-Type": "text/x-xml-plist",
         "Accept": "*/*",
         "User-Agent": _GS_USER_AGENT,
-        "X-MMe-Client-Info": headers.get("X-MMe-Client-Info", ""),
+        "X-MMe-Client-Info": _gsa_client_info(headers.get("X-MMe-Client-Info", "")),
     }
-    resp = requests.post(
+    resp = _gsa_http(
+        "POST",
         _GS_ENDPOINT,
         headers=req_headers,
         data=plistlib.dumps(body),
-        timeout=_TIMEOUT,
-        verify=tls.ca_bundle(),
     )
-    resp.raise_for_status()
-    return plistlib.loads(resp.content)["Response"]
+    return _parse_gs_response(resp)
 
 
 def _check(response: dict[str, Any]) -> None:
@@ -195,6 +338,9 @@ def _twofa_headers(adsid: str, idms_token: str, headers: dict[str, str]) -> dict
         "X-Xcode-Version": _XCODE_VERSION,
     }
     out.update(headers)
+    raw = out.get("X-MMe-Client-Info", "")
+    if isinstance(raw, str):
+        out["X-MMe-Client-Info"] = _gsa_client_info(raw)
     return out
 
 
@@ -206,11 +352,10 @@ def _trigger_trusted(adsid: str, idms_token: str, headers: dict[str, str]) -> No
     in the UI while Apple had actually rejected the request with HTTP 500 over a bad
     ``X-Apple-Locale``.
     """
-    resp = requests.get(
+    resp = _gsa_http(
+        "GET",
         _TRUSTED_TRIGGER,
         headers=_twofa_headers(adsid, idms_token, headers),
-        timeout=_TIMEOUT,
-        verify=tls.ca_bundle(),
     )
     if resp.status_code != 200:
         raise GsaError(
@@ -222,8 +367,109 @@ def _trigger_trusted(adsid: str, idms_token: str, headers: dict[str, str]) -> No
 def _submit_trusted(adsid: str, idms_token: str, code: str, headers: dict[str, str]) -> None:
     req_headers = _twofa_headers(adsid, idms_token, headers)
     req_headers["security-code"] = code
-    resp = requests.get(_VALIDATE, headers=req_headers, timeout=_TIMEOUT, verify=tls.ca_bundle())
-    _check(plistlib.loads(resp.content))
+    resp = _gsa_http("GET", _VALIDATE, headers=req_headers)
+    _raise_for_gsa_http(resp)
+    _check(_parse_gsa_plist(resp.content))
+
+
+def _sms_headers(adsid: str, idms_token: str, headers: dict[str, str]) -> dict[str, str]:
+    """Headers for GrandSlam SMS 2FA JSON endpoints on gsa.apple.com."""
+    out = {
+        "Content-Type": "application/json; charset=utf-8",
+        "Accept": "application/json, text/html",
+        "Accept-Language": "en-us",
+        "User-Agent": "Xcode",
+        "X-Apple-Identity-Token": _identity_token(adsid, idms_token),
+        "X-Apple-App-Info": _XCODE_APP_INFO,
+        "X-Xcode-Version": _XCODE_VERSION,
+    }
+    out.update(headers)
+    raw = out.get("X-MMe-Client-Info", "")
+    if isinstance(raw, str):
+        out["X-MMe-Client-Info"] = _gsa_client_info(raw)
+    out["Content-Type"] = "application/json; charset=utf-8"
+    return out
+
+
+def _sms_body(code: str | None = None) -> bytes:
+    """JSON body for SMS trigger (no code) or submit (with code).
+
+    Phone id ``1`` is Apple's first trusted number, which community GrandSlam
+    clients use when the account has a single SMS destination.
+    """
+    payload: dict[str, Any] = {"phoneNumber": {"id": 1}, "mode": "sms"}
+    if code is not None:
+        payload["securityCode"] = {"code": code}
+    return json.dumps(payload).encode("utf-8")
+
+
+def _trigger_sms(adsid: str, idms_token: str, headers: dict[str, str]) -> None:
+    """Ask Apple to SMS a verification code to the account's trusted number.
+
+    ``PUT /auth/verify/phone`` (no trailing slash) is the live method: a
+    trailing slash is HTTP 405. HTTP 423 means Apple already sent codes
+    (``tooManyCodesSent``); the user should enter the last one.
+    """
+    resp = _gsa_http(
+        "PUT",
+        _SMS_ENDPOINT,
+        headers=_sms_headers(adsid, idms_token, headers),
+        data=_sms_body(),
+    )
+    if _gsa_spent_connection(resp):
+        _raise_for_gsa_http(resp)
+    if resp.status_code in (200, 201, 202, 423):
+        return
+    _raise_for_gsa_http(resp)
+    raise GsaError(
+        f"Apple did not send a verification code (HTTP {resp.status_code}). "
+        "Check your connection and try signing in again."
+    )
+
+
+def _gsa_json_service_error(response: requests.Response) -> str | None:
+    """Return Apple's JSON 2FA error text, or None if the body is not that."""
+    try:
+        parsed = json.loads(response.content)
+    except Exception:  # noqa: BLE001 - HTML 503 and empty bodies are not JSON
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    errors = parsed.get("serviceErrors")
+    if not isinstance(errors, list) or not errors:
+        return None
+    first = errors[0]
+    if not isinstance(first, dict):
+        return None
+    parts = [
+        part.strip()
+        for part in (first.get("title"), first.get("message"))
+        if isinstance(part, str) and part.strip()
+    ]
+    if not parts:
+        return None
+    return ": ".join(dict.fromkeys(parts))
+
+
+def _submit_sms(adsid: str, idms_token: str, code: str, headers: dict[str, str]) -> None:
+    resp = _gsa_http(
+        "POST",
+        _SMS_SUBMIT,
+        headers=_sms_headers(adsid, idms_token, headers),
+        data=_sms_body(code),
+    )
+    if _gsa_spent_connection(resp):
+        _raise_for_gsa_http(resp)
+    if resp.status_code == 200:
+        return
+    detail = _gsa_json_service_error(resp)
+    if detail:
+        raise GsaError(detail)
+    _raise_for_gsa_http(resp)
+    raise GsaError(
+        f"Apple rejected the verification code (HTTP {resp.status_code}). "
+        "Check the code and try again."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -531,6 +777,8 @@ def begin_login(email: str, password: str) -> dict[str, Any]:
     method = "trusteddevice" if secondary == "trustedDeviceSecondaryAuth" else "sms"
     if method == "trusteddevice":
         _trigger_trusted(adsid, idms, anisette.get_headers())
+    else:
+        _trigger_sms(adsid, idms, anisette.get_headers())
     _save_pending(email, adsid, idms, method)
     return {"status": "2fa_required", "method": method}
 
@@ -543,7 +791,7 @@ def complete_2fa(email: str, password: str, code: str) -> dict[str, Any]:
     if pending["method"] == "trusteddevice":
         _submit_trusted(pending["adsid"], pending["idms"], code, anisette.get_headers())
     else:
-        raise GsaError("SMS 2FA submission is not implemented yet")
+        _submit_sms(pending["adsid"], pending["idms"], code, anisette.get_headers())
 
     headers = anisette.get_headers()
     spd, secondary = _authenticate_once(email, password, headers)

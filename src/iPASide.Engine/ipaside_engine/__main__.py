@@ -977,7 +977,10 @@ def _cmd_login(args: argparse.Namespace) -> int:
         return 0
     if result["status"] == "2fa_required":
         print(f"Two-factor authentication required (method: {result['method']}).")
-        print("A verification code was sent to your trusted device(s).")
+        if result["method"] == "sms":
+            print("A verification code was sent to your trusted phone number.")
+        else:
+            print("A verification code was sent to your trusted device(s).")
         print("Re-run the same command adding:  --code <the 6-digit code>")
     else:
         print(f"Authenticated. adsid: {result.get('adsid')}")

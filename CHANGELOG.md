@@ -6,6 +6,23 @@ All notable changes to iPASide are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-09-18
+
+### Fixed
+
+- **Apple ID sign-in no longer dies with HTTP 503 from GsService2 before 2FA.**
+  Apple's GrandSlam edge returns an HTML 503 for two independent reasons: a
+  keep-alive connection is spent after two requests (sign-in is three), and any
+  `X-MMe-Client-Info` whose client token is `com.apple.dt.Xcode` is dropped at
+  the edge. Anisette still reports `Xcode/3594.4.19`. iPASide now uses a
+  throwaway HTTP session per GSA request (`Connection: close`) and presents
+  `com.apple.akd/1.0`. Live-checked against gsa.apple.com: the Xcode token 503'd
+  on the first request; akd reached the service; a full Apple ID sign-in
+  completed through 2FA and `apptokens`.
+- **SMS two-factor codes can be submitted.** Accounts that get SMS instead of a
+  trusted-device prompt were stuck after the password. Incorrect codes now show
+  Apple's message instead of a bare HTTP 400.
+
 ## [1.2.5] - 2026-08-18
 
 ### Added
